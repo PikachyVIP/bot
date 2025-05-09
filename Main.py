@@ -428,19 +428,22 @@ async def law(
         commands: str
 ):
     """Управление доступом к командам"""
+    # Отправляем deferred response
+    await interaction.response.defer(ephemeral=True)
+
     # Проверка прав вызывающего
     if not await check_command_access_app(interaction):
-        return await interaction.response.send_message(
+        return await interaction.followup.send(
             "❌ Недостаточно прав",
             ephemeral=True
         )
 
-    # Получаем список всех команд (и обычных, и слэш-команд)
-    all_commands = list(bot.all_commands.keys())  # Обычные команды
-    all_commands += [cmd.name for cmd in bot.tree.get_commands()]  # Слэш-команды
+    # Получаем список всех команд
+    all_commands = list(bot.all_commands.keys())
+    all_commands += [cmd.name for cmd in bot.tree.get_commands()]
     all_commands = [cmd.lower() for cmd in all_commands]
 
-    # Обработка ключевого слова 'all'
+    # Обработка команды 'all'
     if commands.strip().lower() == 'all':
         command_list = all_commands
     else:
@@ -449,14 +452,14 @@ async def law(
     # Проверка существования команд
     invalid_commands = [cmd for cmd in command_list if cmd not in all_commands]
     if invalid_commands:
-        return await interaction.response.send_message(
+        return await interaction.followup.send(
             f"❌ Неизвестные команды: {', '.join(invalid_commands)}",
             ephemeral=True
         )
 
     conn = get_db_connection()
     if not conn:
-        return await interaction.response.send_message(
+        return await interaction.followup.send(
             "❌ Ошибка подключения к базе данных",
             ephemeral=True
         )
@@ -484,11 +487,8 @@ async def law(
 
         conn.commit()
 
-        # Формируем компактное сообщение если изменений много
-        if count > 5:
-            message = f"Выполнено {count} изменений прав для {member.mention}"
-        else:
-            message = "\n".join(changes)
+        # Формируем сообщение
+        message = f"Выполнено {count} изменений" if count > 5 else "\n".join(changes)
 
         embed = discord.Embed(
             title=f"Права обновлены для {member.display_name}",
@@ -497,27 +497,23 @@ async def law(
             timestamp=datetime.datetime.now()
         )
 
-        # Добавляем поле с общим количеством доступных команд
-        cursor.execute("""
-            SELECT COUNT(*) FROM command_access
-            WHERE user_id = %s
-        """, (member.id,))
+        cursor.execute("SELECT COUNT(*) FROM command_access WHERE user_id = %s", (member.id,))
         total_commands = cursor.fetchone()[0]
 
-        embed.set_footer(
-            text=f"Всего доступно команд: {total_commands}/{len(all_commands)}"
-        )
+        embed.set_footer(text=f"Всего доступно команд: {total_commands}/{len(all_commands)}")
 
-
-        await send_and_delete(interaction, embed)
+        # Отправляем embed напрямую
+        await interaction.followup.send(embed=embed)
 
     except Error as e:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"❌ Ошибка базы данных: {e}",
             ephemeral=True
         )
     finally:
-        conn.close()
+        if conn.is_connected():
+            cursor.close()
+            conn.close()
 
 
 @bot.tree.command(
