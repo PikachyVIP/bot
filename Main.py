@@ -15,7 +15,7 @@ import os
 from os import environ
 import yt_dlp
 from discord import FFmpegPCMAudio
-from data import token, assettoken
+from data import token, assettoken, mysqlconf
 import ffmpeg
 
 
@@ -34,15 +34,7 @@ bot.remove_command('help')
 # ID канала для создания веток (замените на свой)
 LS_CHANNEL_ID = 1121240277483536485
 
-MYSQL_CONFIG = {
-    'host': 'localhost',
-    'port': 3306,
-    'user': 'server1',
-    'password': '335336337',
-    'database': 'GC_bot',
-    'charset': 'utf8mb4',
-    'connect_timeout': 10
-}
+MYSQL_CONFIG = mysqlconf
 
 # Словари для хранения данных
 thread_users = {}  # {thread_id: user_id}
@@ -78,16 +70,8 @@ def init_db():
                     messages_count INT DEFAULT 0,
                     last_message TIMESTAMP,
                     last_xp_update TIMESTAMP,
-                    info TEXT DEFAULT 'Пусто'
+                    info TEXT
                 )
-            """)
-            cursor.execute("""
-                ALTER TABLE user_levels
-                ADD COLUMN IF NOT EXISTS info TEXT DEFAULT 'Пусто'
-            """)
-            cursor.execute("""
-                ALTER TABLE user_levels 
-                ADD COLUMN IF NOT EXISTS last_xp_update TIMESTAMP NULL DEFAULT NULL
             """)
             conn.commit()
         except Error as e:
@@ -325,7 +309,6 @@ class ThreadControlView(View):
         )
 
 
-
 @bot.tree.command(
     name="getlaw",
     description="Показывает список доступных команд для пользователя"
@@ -335,24 +318,25 @@ class ThreadControlView(View):
 )
 async def getlaw(interaction: discord.Interaction, member: discord.Member):
     """Показывает какие команды доступны указанному пользователю"""
+    # Отправляем deferred response, если нужно время на обработку
+    await interaction.response.defer(ephemeral=True)
+
     # Проверка прав вызывающего
     if not await check_command_access_app(interaction):
-        return await interaction.response.send_message(
+        return await interaction.followup.send(
             "❌ Недостаточно прав",
             ephemeral=True
         )
 
     conn = get_db_connection()
     if not conn:
-        return await interaction.response.send_message(
+        return await interaction.followup.send(
             "❌ Ошибка подключения к базе данных",
             ephemeral=True
         )
 
     try:
         cursor = conn.cursor(dictionary=True)
-
-        # Получаем команды из БД
         cursor.execute("""
             SELECT command_name FROM command_access
             WHERE user_id = %s
@@ -360,11 +344,9 @@ async def getlaw(interaction: discord.Interaction, member: discord.Member):
         """, (member.id,))
         db_commands = [row['command_name'] for row in cursor.fetchall()]
 
-        # Получаем все команды бота (и обычные, и слэш-команды)
-        all_commands = list(bot.all_commands.keys())  # Обычные команды
-        all_commands += [cmd.name for cmd in bot.tree.get_commands()]  # Слэш-команды
+        all_commands = list(bot.all_commands.keys())
+        all_commands += [cmd.name for cmd in bot.tree.get_commands()]
 
-        # Формируем embed
         embed = discord.Embed(
             title=f"Права доступа для {member.display_name}",
             color=discord.Color.blue(),
@@ -384,7 +366,6 @@ async def getlaw(interaction: discord.Interaction, member: discord.Member):
                 inline=False
             )
 
-        # Показываем все возможные команды для справки
         embed.add_field(
             name="Все команды бота",
             value=", ".join(sorted(all_commands)),
@@ -396,16 +377,18 @@ async def getlaw(interaction: discord.Interaction, member: discord.Member):
             icon_url=interaction.user.display_avatar.url
         )
 
-
-        await send_and_delete(interaction, embed)
+        # Отправляем embed напрямую через followup
+        await interaction.followup.send(embed=embed)
 
     except Error as e:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"❌ Ошибка базы данных: {e}",
             ephemeral=True
         )
     finally:
-        conn.close()
+        if conn.is_connected():
+            cursor.close()
+            conn.close()
 
 
 
