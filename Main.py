@@ -2472,7 +2472,6 @@ async def audio_command(
             if interaction.guild.voice_client:
                 await interaction.guild.voice_client.disconnect()
 
-    # Обработка URL
     elif type == "url":
         if not url:
             return await interaction.response.send_message("❌ Укажите URL!", ephemeral=True)
@@ -2501,7 +2500,6 @@ async def audio_command(
             final_volume = (vol / 100) * 0.5
             voice_client = await channel.connect()
 
-            # Создаем View с кнопками
             class URLControls(discord.ui.View):
                 def __init__(self, voice_client, initial_volume):
                     super().__init__(timeout=None)
@@ -2509,6 +2507,7 @@ async def audio_command(
                     self.paused = False
                     self.volume = initial_volume
                     self.message = None
+                    self.lock = asyncio.Lock()
 
                 async def update_embed(self):
                     if not self.message:
@@ -2521,56 +2520,77 @@ async def audio_command(
                     )
                     embed.add_field(name="Длительность", value=duration_str, inline=True)
                     embed.add_field(name="Громкость", value=f"{self.volume}%", inline=True)
-                    embed.set_footer(text="Используйте кнопки ниже для управления")
 
                     try:
                         await self.message.edit(embed=embed)
-                    except:
-                        pass
+                    except discord.NotFound:
+                        self.stop()
 
                 @discord.ui.button(label="⏯", style=discord.ButtonStyle.blurple)
                 async def pause_resume(self, button, interaction):
-                    if self.voice_client.is_playing():
-                        self.voice_client.pause()
-                        self.paused = True
-                        button.label = "▶"
-                    elif self.voice_client.is_paused():
-                        self.voice_client.resume()
-                        self.paused = False
-                        button.label = "⏸"
-                    await interaction.response.defer()
+                    async with self.lock:
+                        try:
+                            if self.voice_client.is_playing():
+                                self.voice_client.pause()
+                                self.paused = True
+                                button.label = "▶"
+                            elif self.voice_client.is_paused():
+                                self.voice_client.resume()
+                                self.paused = False
+                                button.label = "⏸"
+                            await interaction.response.defer(ephemeral=True)
+                        except:
+                            await interaction.response.defer(ephemeral=True)
 
                 @discord.ui.button(label="⏹", style=discord.ButtonStyle.red)
                 async def stop(self, button, interaction):
-                    if self.voice_client.is_playing() or self.voice_client.is_paused():
-                        self.voice_client.stop()
-                        await self.voice_client.disconnect()
-                        self.stop()
+                    async with self.lock:
                         try:
-                            await self.message.edit(view=None)
+                            if self.voice_client.is_connected():
+                                self.voice_client.stop()
+                                await self.voice_client.disconnect()
+                            self.stop()
+                            if self.message:
+                                try:
+                                    await self.message.edit(view=None)
+                                except:
+                                    pass
+                            await interaction.response.defer(ephemeral=True)
                         except:
-                            pass
-                    await interaction.response.defer()
+                            await interaction.response.defer(ephemeral=True)
 
-                @discord.ui.button(label="🔊 +10", style=discord.ButtonStyle.grey)
+                @discord.ui.button(label="🔊", style=discord.ButtonStyle.grey)
                 async def volume_up(self, button, interaction):
-                    self.volume = min(100, self.volume + 10)
-                    new_volume = (self.volume / 100) * 0.5
-                    if hasattr(self.voice_client.source, 'volume'):
-                        self.voice_client.source.volume = new_volume
-                    await self.update_embed()
-                    await interaction.response.defer()
+                    async with self.lock:
+                        try:
+                            self.volume = min(100, self.volume + 10)
+                            new_volume = (self.volume / 100) * 0.5
+                            if hasattr(self.voice_client.source, 'volume'):
+                                self.voice_client.source.volume = new_volume
+                            await self.update_embed()
+                            await interaction.response.defer(ephemeral=True)
+                        except:
+                            await interaction.response.defer(ephemeral=True)
 
-                @discord.ui.button(label="🔉 -10", style=discord.ButtonStyle.grey)
+                @discord.ui.button(label="🔉", style=discord.ButtonStyle.grey)
                 async def volume_down(self, button, interaction):
-                    self.volume = max(0, self.volume - 10)
-                    new_volume = (self.volume / 100) * 0.5
-                    if hasattr(self.voice_client.source, 'volume'):
-                        self.voice_client.source.volume = new_volume
-                    await self.update_embed()
-                    await interaction.response.defer()
+                    async with self.lock:
+                        try:
+                            self.volume = max(0, self.volume - 10)
+                            new_volume = (self.volume / 100) * 0.5
+                            if hasattr(self.voice_client.source, 'volume'):
+                                self.voice_client.source.volume = new_volume
+                            await self.update_embed()
+                            await interaction.response.defer(ephemeral=True)
+                        except:
+                            await interaction.response.defer(ephemeral=True)
 
-            # Создаем embed
+                async def on_timeout(self):
+                    try:
+                        await self.message.edit(view=None)
+                    except:
+                        pass
+
             embed = discord.Embed(
                 title="🎶 Воспроизведение URL",
                 description=f"**{title}**",
@@ -2578,7 +2598,6 @@ async def audio_command(
             )
             embed.add_field(name="Длительность", value=duration_str, inline=True)
             embed.add_field(name="Громкость", value=f"{vol}%", inline=True)
-
 
             controls = URLControls(voice_client, vol)
             message = await interaction.followup.send(embed=embed, view=controls)
@@ -2592,13 +2611,12 @@ async def audio_command(
             audio_source = FFmpegPCMAudio(audio_url, **ffmpeg_options)
             audio_source = discord.PCMVolumeTransformer(audio_source)
             audio_source.volume = final_volume
-            voice_client.play(audio_source)
+            voice_client.play(audio_source,
+                              after=lambda e: asyncio.run_coroutine_threadsafe(controls.on_timeout(), bot.loop))
 
-            # Ждем завершения воспроизведения
             while voice_client.is_playing() or voice_client.is_paused():
                 await asyncio.sleep(1)
 
-            # Удаляем кнопки после завершения
             try:
                 await message.edit(view=None)
             except:
@@ -2608,7 +2626,10 @@ async def audio_command(
             await interaction.followup.send(f"❌ Ошибка: {str(e)}")
         finally:
             if interaction.guild.voice_client:
-                await interaction.guild.voice_client.disconnect()
+                try:
+                    await interaction.guild.voice_client.disconnect()
+                except:
+                    pass
 
     # Обработка VK Player
     elif type == "vkplayer":
