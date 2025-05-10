@@ -2503,10 +2503,30 @@ async def audio_command(
 
             # Создаем View с кнопками
             class URLControls(discord.ui.View):
-                def __init__(self, voice_client):
+                def __init__(self, voice_client, initial_volume):
                     super().__init__(timeout=None)
                     self.voice_client = voice_client
                     self.paused = False
+                    self.volume = initial_volume
+                    self.message = None
+
+                async def update_embed(self):
+                    if not self.message:
+                        return
+
+                    embed = discord.Embed(
+                        title="🎶 Воспроизведение URL",
+                        description=f"**{title}**",
+                        color=discord.Color.blue()
+                    )
+                    embed.add_field(name="Длительность", value=duration_str, inline=True)
+                    embed.add_field(name="Громкость", value=f"{self.volume}%", inline=True)
+                    embed.set_footer(text="Используйте кнопки ниже для управления")
+
+                    try:
+                        await self.message.edit(embed=embed)
+                    except:
+                        pass
 
                 @discord.ui.button(label="⏯", style=discord.ButtonStyle.blurple)
                 async def pause_resume(self, button, interaction):
@@ -2526,6 +2546,28 @@ async def audio_command(
                         self.voice_client.stop()
                         await self.voice_client.disconnect()
                         self.stop()
+                        try:
+                            await self.message.edit(view=None)
+                        except:
+                            pass
+                    await interaction.response.defer()
+
+                @discord.ui.button(label="🔊 +10", style=discord.ButtonStyle.grey)
+                async def volume_up(self, button, interaction):
+                    self.volume = min(100, self.volume + 10)
+                    new_volume = (self.volume / 100) * 0.5
+                    if hasattr(self.voice_client.source, 'volume'):
+                        self.voice_client.source.volume = new_volume
+                    await self.update_embed()
+                    await interaction.response.defer()
+
+                @discord.ui.button(label="🔉 -10", style=discord.ButtonStyle.grey)
+                async def volume_down(self, button, interaction):
+                    self.volume = max(0, self.volume - 10)
+                    new_volume = (self.volume / 100) * 0.5
+                    if hasattr(self.voice_client.source, 'volume'):
+                        self.voice_client.source.volume = new_volume
+                    await self.update_embed()
                     await interaction.response.defer()
 
             # Создаем embed
@@ -2537,8 +2579,10 @@ async def audio_command(
             embed.add_field(name="Длительность", value=duration_str, inline=True)
             embed.add_field(name="Громкость", value=f"{vol}%", inline=True)
 
-            controls = URLControls(voice_client)
+
+            controls = URLControls(voice_client, vol)
             message = await interaction.followup.send(embed=embed, view=controls)
+            controls.message = message
 
             ffmpeg_options = {
                 'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
@@ -2546,6 +2590,8 @@ async def audio_command(
             }
 
             audio_source = FFmpegPCMAudio(audio_url, **ffmpeg_options)
+            audio_source = discord.PCMVolumeTransformer(audio_source)
+            audio_source.volume = final_volume
             voice_client.play(audio_source)
 
             # Ждем завершения воспроизведения
