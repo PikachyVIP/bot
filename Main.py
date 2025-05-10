@@ -73,6 +73,14 @@ def init_db():
                     info TEXT
                 )
             """)
+            # cursor.execute("""
+            #      CREATE TABLE IF NOT EXISTS bot_settings (
+            #         guild_id BIGINT PRIMARY KEY,
+            #         vkplayer_webhook TEXT,
+            #         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            #         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            #     )
+            # """)
             conn.commit()
         except Error as e:
             print(f"Ошибка MySQL: {e}")
@@ -658,6 +666,11 @@ async def telllc(
     Использование:
     /telllc @user1 @role1 @user2 сообщение [show_sender:True/False]
     """
+    if not await check_command_access_app(interaction):
+        return await interaction.response.send_message(
+            "❌ Недостаточно прав",
+            ephemeral=True
+        )
     # Парсим цели из строки (Discord API не поддерживает Greedy в слэш-командах)
     try:
         target_objects = []
@@ -2416,11 +2429,11 @@ async def audio_command(
         sound: Optional[str] = None,
         volume: Optional[app_commands.Range[int, 1, 300]] = None
 ):
-    # if not await check_command_access_app(interaction):
-    #     return await interaction.response.send_message(
-    #         "❌ Недостаточно прав",
-    #         ephemeral=True
-    #     )
+    if not await check_command_access_app(interaction):
+        return await interaction.response.send_message(
+            "❌ Недостаточно прав",
+            ephemeral=True
+        )
 
     # Обработка звуков
     if type == "sound":
@@ -2481,9 +2494,51 @@ async def audio_command(
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 audio_url = info['url']
+                title = info.get('title', 'Неизвестный трек')
+                duration = info.get('duration', 0)
+                duration_str = str(timedelta(seconds=duration)).split('.')[0] if duration else '0:00:00'
 
             final_volume = (vol / 100) * 0.5
             voice_client = await channel.connect()
+
+            # Создаем View с кнопками
+            class URLControls(discord.ui.View):
+                def __init__(self, voice_client):
+                    super().__init__(timeout=None)
+                    self.voice_client = voice_client
+                    self.paused = False
+
+                @discord.ui.button(label="⏯", style=discord.ButtonStyle.blurple)
+                async def pause_resume(self, button, interaction):
+                    if self.voice_client.is_playing():
+                        self.voice_client.pause()
+                        self.paused = True
+                        button.label = "▶"
+                    elif self.voice_client.is_paused():
+                        self.voice_client.resume()
+                        self.paused = False
+                        button.label = "⏸"
+                    await interaction.response.defer()
+
+                @discord.ui.button(label="⏹", style=discord.ButtonStyle.red)
+                async def stop(self, button, interaction):
+                    if self.voice_client.is_playing() or self.voice_client.is_paused():
+                        self.voice_client.stop()
+                        await self.voice_client.disconnect()
+                        self.stop()
+                    await interaction.response.defer()
+
+            # Создаем embed
+            embed = discord.Embed(
+                title="🎶 Воспроизведение URL",
+                description=f"**{title}**",
+                color=discord.Color.blue()
+            )
+            embed.add_field(name="Длительность", value=duration_str, inline=True)
+            embed.add_field(name="Громкость", value=f"{vol}%", inline=True)
+
+            controls = URLControls(voice_client)
+            message = await interaction.followup.send(embed=embed, view=controls)
 
             ffmpeg_options = {
                 'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
@@ -2493,10 +2548,15 @@ async def audio_command(
             audio_source = FFmpegPCMAudio(audio_url, **ffmpeg_options)
             voice_client.play(audio_source)
 
-            await interaction.followup.send(f"🔊 Начинаю потоковое воспроизведение\n")
-
-            while voice_client.is_playing():
+            # Ждем завершения воспроизведения
+            while voice_client.is_playing() or voice_client.is_paused():
                 await asyncio.sleep(1)
+
+            # Удаляем кнопки после завершения
+            try:
+                await message.edit(view=None)
+            except:
+                pass
 
         except Exception as e:
             await interaction.followup.send(f"❌ Ошибка: {str(e)}")
@@ -2541,5 +2601,122 @@ async def audio_command(
             embed = create_embed("❌ Ошибка", str(e), Color.red())
             await send_and_delete(interaction, embed)
             print(f"Ошибка VKPlayer: {e}")
+
+
+# def get_vkplayer_webhook(guild_id):
+#     conn = get_db_connection()
+#     if not conn:
+#         return None
+#
+#     try:
+#         cursor = conn.cursor(dictionary=True)
+#         cursor.execute("""
+#             SELECT vkplayer_webhook FROM bot_settings
+#             WHERE guild_id = %s
+#         """, (guild_id,))
+#         result = cursor.fetchone()
+#         return result['vkplayer_webhook'] if result else None
+#     except Error:
+#         return None
+#     finally:
+#         conn.close()
+#
+#
+# @bot.tree.command(
+#     name="settings",
+#     description="Настройки бота"
+# )
+# @app_commands.describe(
+#     action="Действие",
+#     webhook_url="URL вебхука для VK Player"
+# )
+# @app_commands.choices(
+#     action=[
+#         app_commands.Choice(name="Установить вебхук", value="install"),
+#         app_commands.Choice(name="Показать настройки", value="show")
+#     ]
+# )
+# async def settings(
+#     interaction: discord.Interaction,
+#     action: app_commands.Choice[str],
+#     webhook_url: str = None
+# ):
+#     """Управление настройками бота"""
+#     if not await check_command_access_app(interaction):
+#         return await interaction.response.send_message(
+#             "❌ Недостаточно прав",
+#             ephemeral=True
+#         )
+#
+#     if action.value == "install":
+#         if not webhook_url:
+#             return await interaction.response.send_message(
+#                 "❌ Укажите URL вебхука",
+#                 ephemeral=True
+#             )
+#
+#         # Сохраняем в базу данных
+#         conn = get_db_connection()
+#         if not conn:
+#             return await interaction.response.send_message(
+#                 "❌ Ошибка подключения к БД",
+#                 ephemeral=True
+#             )
+#
+#         try:
+#             cursor = conn.cursor()
+#             cursor.execute("""
+#                 INSERT INTO bot_settings (guild_id, vkplayer_webhook)
+#                 VALUES (%s, %s)
+#                 ON DUPLICATE KEY UPDATE vkplayer_webhook = VALUES(vkplayer_webhook)
+#             """, (interaction.guild.id, webhook_url))
+#             conn.commit()
+#
+#             await interaction.response.send_message(
+#                 f"✅ Вебхук VK Player успешно установлен: `{webhook_url[:30]}...`",
+#                 ephemeral=True
+#             )
+#         except Error as e:
+#             await interaction.response.send_message(
+#                 f"❌ Ошибка БД: {e}",
+#                 ephemeral=True
+#             )
+#         finally:
+#             conn.close()
+#
+#     elif action.value == "show":
+#         conn = get_db_connection()
+#         if not conn:
+#             return await interaction.response.send_message(
+#                 "❌ Ошибка подключения к БД",
+#                 ephemeral=True
+#             )
+#
+#         try:
+#             cursor = conn.cursor(dictionary=True)
+#             cursor.execute("""
+#                 SELECT vkplayer_webhook FROM bot_settings
+#                 WHERE guild_id = %s
+#             """, (interaction.guild.id,))
+#             settings = cursor.fetchone()
+#
+#             embed = discord.Embed(
+#                 title="Текущие настройки",
+#                 color=discord.Color.blue()
+#             )
+#             embed.add_field(
+#                 name="VK Player Webhook",
+#                 value=settings['vkplayer_webhook'] if settings and settings['vkplayer_webhook'] else "Не установлен",
+#                 inline=False
+#             )
+#
+#             await interaction.response.send_message(embed=embed, ephemeral=True)
+#         except Error as e:
+#             await interaction.response.send_message(
+#                 f"❌ Ошибка БД: {e}",
+#                 ephemeral=True
+#             )
+#         finally:
+#             conn.close()
 
 bot.run(TOKEN)
