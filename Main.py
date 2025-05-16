@@ -16,6 +16,7 @@ from os import environ
 import yt_dlp
 from discord import FFmpegPCMAudio
 from data import token, assettoken, mysqlconf
+from install_multivoice import setup
 import ffmpeg
 
 
@@ -405,6 +406,7 @@ async def on_ready():
 
     print(f'Бот {bot.user} запущен и готов к работе!')
     # Регистрируем персистентное View
+    await setup(bot)
     bot.add_view(ThreadControlView())
     try:
         # Синхронизируем команды с Discord
