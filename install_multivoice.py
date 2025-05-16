@@ -120,33 +120,27 @@ async def setup(bot: commands.Bot):
                 if not category:
                     return
 
-                # Создаем новый канал ПОД триггером (позиция 1)
+                # Создаем новый канал В САМОМ НИЗУ (под всеми существующими)
                 new_channel = await category.create_voice_channel(
                     name=f"{system.channel_prefix}{member.display_name}",
-                    position=1
+                    position=len(category.channels)  # Позиция в самом конце
                 )
                 await member.move_to(new_channel)
 
-                # Отправляем embed в чат голосового канала (только создателю)
+                # Отправляем embed в чат голосового канала
                 embed = discord.Embed(
                     title="Управление голосовым каналом",
-                    description="Используйте меню ниже для настройки вашего канала",
+                    description="Используйте меню ниже для настройки",
                     color=discord.Color.blue()
                 )
-                embed.add_field(
-                    name="Доступные действия",
-                    value="• Переименовать канал\n• Установить лимит участников\n• Закрыть/открыть канал",
-                    inline=False
-                )
-
                 view = ChannelControlView(new_channel, member)
                 await new_channel.send(embed=embed, view=view)
 
-            # 2. Удаление пустых каналов
+            # 2. Удаление пустых каналов (исправленная проверка)
             if (before.channel
                     and before.channel.category_id == settings['category_id']
                     and before.channel.id != settings['trigger_channel_id']
-                    and before.channel.name.startswith(system.channel_prefix)
+                    and before.channel.name.startswith(system.channel_prefix)  # Проверяем только по префиксу
                     and len(before.channel.members) == 0):
                 await before.channel.delete()
 
