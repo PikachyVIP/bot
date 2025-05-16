@@ -19,7 +19,7 @@ from data import token, assettoken, mysqlconf
 from install_multivoice import setup
 import ffmpeg
 
-    
+
 
 TOKEN = token
 ASSETTOKEN = assettoken
@@ -73,6 +73,15 @@ def init_db():
                     last_message TIMESTAMP,
                     last_xp_update TIMESTAMP,
                     info TEXT
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS voice_system (
+                    guild_id BIGINT PRIMARY KEY,
+                    category_id BIGINT NOT NULL,
+                    trigger_channel_id BIGINT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
                 )
             """)
             # cursor.execute("""
