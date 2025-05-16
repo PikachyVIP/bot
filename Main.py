@@ -20,6 +20,7 @@ from install_multivoice import setup
 import ffmpeg
 
 
+
 TOKEN = token
 ASSETTOKEN = assettoken
 PREFIX = '!'
