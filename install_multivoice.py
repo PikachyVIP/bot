@@ -2,99 +2,32 @@ import discord
 from discord.ext import commands
 from discord.ui import Select, View
 import mysql.connector
-from mysql.connector import Error
 from datetime import datetime
+from mysql.connector import Error
 from data import mysqlconf
 
-# Конфиг MySQL (возьмите из основного файла)
+
 MYSQL_CONFIG = mysqlconf
 
-
-
-class ChannelSettingsMenu(View):
-    def __init__(self, voice_channel):
-        super().__init__(timeout=None)
-        self.voice_channel = voice_channel
-
-        options = [
-            discord.SelectOption(label="Изменить название", value="rename", emoji="✏️"),
-            discord.SelectOption(label="Лимит участников", value="limit", emoji="👥"),
-            discord.SelectOption(label="Закрыть канал", value="lock", emoji="🔒"),
-            discord.SelectOption(label="Открыть канал", value="unlock", emoji="🔓"),
-        ]
-
-        self.select = Select(
-            placeholder="Выберите настройку...",
-            options=options
-        )
-        self.select.callback = self.on_select
-        self.add_item(self.select)
-
-    async def on_select(self, interaction):
-        if interaction.user not in self.voice_channel.members:
-            await interaction.response.send_message("Вы должны быть в голосовом канале!", ephemeral=True)
-            return
-
-        value = self.select.values[0]
-        if value == "rename":
-            modal = RenameModal(self.voice_channel)
-            await interaction.response.send_modal(modal)
-        elif value == "limit":
-            modal = LimitModal(self.voice_channel)
-            await interaction.response.send_modal(modal)
-        elif value == "lock":
-            await self.voice_channel.set_permissions(interaction.guild.default_role, connect=False)
-            await interaction.response.send_message("🔒 Канал закрыт!", ephemeral=True)
-        elif value == "unlock":
-            await self.voice_channel.set_permissions(interaction.guild.default_role, connect=True)
-            await interaction.response.send_message("🔓 Канал открыт!", ephemeral=True)
-
-
-class RenameModal(discord.ui.Modal):
-    def __init__(self, voice_channel):
-        super().__init__(title="Изменение названия")
-        self.voice_channel = voice_channel
-        self.new_name = discord.ui.TextInput(
-            label="Новое название",
-            placeholder=f"Текущее: {voice_channel.name}",
-            max_length=100
-        )
-        self.add_item(self.new_name)
-
-    async def on_submit(self, interaction):
-        await self.voice_channel.edit(name=self.new_name.value)
-        await interaction.response.send_message(f"✅ Название изменено на: {self.new_name.value}", ephemeral=True)
-
-
-class LimitModal(discord.ui.Modal):
-    def __init__(self, voice_channel):
-        super().__init__(title="Лимит участников")
-        self.voice_channel = voice_channel
-        self.limit = discord.ui.TextInput(
-            label="Количество (0 = без лимита)",
-            placeholder=f"Текущее: {voice_channel.user_limit or 'без лимита'}",
-            max_length=2
-        )
-        self.add_item(self.limit)
-
-    async def on_submit(self, interaction):
-        try:
-            limit = int(self.limit.value)
-            await self.voice_channel.edit(user_limit=max(0, min(99, limit)))
-            msg = "✅ Лимит участников: " + (f"{limit}" if limit > 0 else "без лимита")
-            await interaction.response.send_message(msg, ephemeral=True)
-        except ValueError:
-            await interaction.response.send_message("❌ Введите число от 0 до 99", ephemeral=True)
 
 
 class VoiceSystem:
     def __init__(self):
         self.channel_prefix = "🔊│"
 
-    async def get_voice_settings(self, guild_id):
-        """Получаем настройки голосовой системы для сервера"""
+    async def get_db_connection(self):
         try:
-            conn = mysql.connector.connect(**MYSQL_CONFIG)
+            return mysql.connector.connect(**MYSQL_CONFIG)
+        except Error as e:
+            print(f"MySQL Error: {e}")
+            return None
+
+    async def get_voice_settings(self, guild_id):
+        conn = await self.get_db_connection()
+        if not conn:
+            return None
+
+        try:
             cursor = conn.cursor(dictionary=True)
             cursor.execute("""
                 SELECT category_id, trigger_channel_id 
@@ -102,17 +35,16 @@ class VoiceSystem:
                 WHERE guild_id = %s
             """, (guild_id,))
             return cursor.fetchone()
-        except Error as e:
-            print(f"MySQL Error: {e}")
-            return None
         finally:
             if conn.is_connected():
                 conn.close()
 
     async def save_voice_settings(self, guild_id, category_id, trigger_channel_id):
-        """Сохраняем настройки голосовой системы"""
+        conn = await self.get_db_connection()
+        if not conn:
+            return
+
         try:
-            conn = mysql.connector.connect(**MYSQL_CONFIG)
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO voice_system (guild_id, category_id, trigger_channel_id, created_at)
@@ -122,8 +54,6 @@ class VoiceSystem:
                 trigger_channel_id = VALUES(trigger_channel_id)
             """, (guild_id, category_id, trigger_channel_id, datetime.now()))
             conn.commit()
-        except Error as e:
-            print(f"MySQL Error: {e}")
         finally:
             if conn.is_connected():
                 conn.close()
@@ -132,45 +62,45 @@ class VoiceSystem:
 async def setup(bot: commands.Bot):
     system = VoiceSystem()
 
-    # Создаём таблицу при запуске
-    try:
-        conn = mysql.connector.connect(**MYSQL_CONFIG)
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS voice_system (
-                guild_id BIGINT PRIMARY KEY,
-                category_id BIGINT NOT NULL,
-                trigger_channel_id BIGINT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-            )
-        """)
-        conn.commit()
-    except Error as e:
-        print(f"MySQL Error: {e}")
-    finally:
-        if conn.is_connected():
-            conn.close()
+    # Инициализация БД
+    conn = await system.get_db_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS voice_system (
+                    guild_id BIGINT PRIMARY KEY,
+                    category_id BIGINT NOT NULL,
+                    trigger_channel_id BIGINT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                )
+            """)
+            conn.commit()
+        except Error as e:
+            print(f"MySQL Error: {e}")
+        finally:
+            if conn.is_connected():
+                conn.close()
 
     @bot.tree.command(name="install_multivoice", description="Установка системы временных голосовых каналов")
     async def install_multivoice(interaction: discord.Interaction):
-        """Установка системы с сохранением ID в БД"""
         try:
-            # Создаём категорию
+            # Создаем категорию
             category = await interaction.guild.create_category(
                 name="[🔒] Временные каналы",
                 position=0)
 
-            # Создаём триггер-канал (ВНИЗУ категории)
+            # Создаем триггер-канал НА САМОМ ВЕРХУ (позиция 0)
             trigger_channel = await category.create_voice_channel(
                 name="┏[➕]┓🔒Создать",
-                position=1)
+                position=0)
 
             # Сохраняем в БД
             await system.save_voice_settings(interaction.guild.id, category.id, trigger_channel.id)
 
             await interaction.response.send_message(
-                "✅ Система готова! Зайдите в нижний канал категории для создания личного канала.",
+                "✅ Система готова! Зайдите в верхний канал категории для создания личного канала.",
                 ephemeral=True)
         except Exception as e:
             await interaction.response.send_message(
@@ -179,7 +109,6 @@ async def setup(bot: commands.Bot):
 
     @bot.event
     async def on_voice_state_update(member, before, after):
-        # Получаем настройки из БД
         settings = await system.get_voice_settings(member.guild.id)
         if not settings:
             return
@@ -191,26 +120,27 @@ async def setup(bot: commands.Bot):
                 if not category:
                     return
 
-                # Создаём новый канал ПОД триггером
+                # Создаем новый канал ПОД триггером (позиция 1)
                 new_channel = await category.create_voice_channel(
                     name=f"{system.channel_prefix}{member.display_name}",
-                    position=len(category.channels)
+                    position=1
                 )
                 await member.move_to(new_channel)
 
-                # Отправляем меню управления в текстовый чат
-                text_channel = discord.utils.get(member.guild.text_channels, name="общий")  # Или другой канал
-                if text_channel:
-                    embed = discord.Embed(
-                        title=f"Управление каналом {new_channel.name}",
-                        description="Используйте меню ниже для настройки вашего голосового канала",
-                        color=discord.Color.blue()
-                    )
-                    await text_channel.send(
-                        content=f"{member.mention}, вот панель управления вашим каналом:",
-                        embed=embed,
-                        view=ChannelSettingsMenu(new_channel)
-                    )
+                # Отправляем embed в чат голосового канала (только создателю)
+                embed = discord.Embed(
+                    title="Управление голосовым каналом",
+                    description="Используйте меню ниже для настройки вашего канала",
+                    color=discord.Color.blue()
+                )
+                embed.add_field(
+                    name="Доступные действия",
+                    value="• Переименовать канал\n• Установить лимит участников\n• Закрыть/открыть канал",
+                    inline=False
+                )
+
+                view = ChannelControlView(new_channel, member)
+                await new_channel.send(embed=embed, view=view)
 
             # 2. Удаление пустых каналов
             if (before.channel
@@ -222,3 +152,101 @@ async def setup(bot: commands.Bot):
 
         except Exception as e:
             print(f"Voice System Error: {e}")
+
+
+class ChannelControlView(View):
+    def __init__(self, voice_channel, owner):
+        super().__init__(timeout=None)
+        self.voice_channel = voice_channel
+        self.owner = owner
+
+        self.select = Select(
+            placeholder="Выберите действие...",
+            options=[
+                discord.SelectOption(label="Переименовать", value="rename", emoji="✏️"),
+                discord.SelectOption(label="Лимит участников", value="limit", emoji="👥"),
+                discord.SelectOption(label="Закрыть канал", value="lock", emoji="🔒"),
+                discord.SelectOption(label="Открыть канал", value="unlock", emoji="🔓")
+            ]
+        )
+        self.select.callback = self.on_select
+        self.add_item(self.select)
+
+    async def on_select(self, interaction):
+        # Проверяем, что это создатель канала
+        if interaction.user != self.owner:
+            await interaction.response.send_message(
+                "❌ Только создатель канала может управлять им!",
+                ephemeral=True
+            )
+            return
+
+        value = self.select.values[0]
+
+        if value == "rename":
+            await interaction.response.send_modal(RenameModal(self.voice_channel))
+        elif value == "limit":
+            await interaction.response.send_modal(LimitModal(self.voice_channel))
+        elif value == "lock":
+            await self.voice_channel.set_permissions(
+                interaction.guild.default_role,
+                connect=False
+            )
+            await interaction.response.send_message(
+                "🔒 Канал закрыт для всех участников!",
+                ephemeral=True
+            )
+        elif value == "unlock":
+            await self.voice_channel.set_permissions(
+                interaction.guild.default_role,
+                connect=True
+            )
+            await interaction.response.send_message(
+                "🔓 Канал открыт для всех участников!",
+                ephemeral=True
+            )
+
+
+class RenameModal(discord.ui.Modal):
+    def __init__(self, voice_channel):
+        super().__init__(title="Переименовать голосовой канал")
+        self.voice_channel = voice_channel
+        self.new_name = discord.ui.TextInput(
+            label="Введите новое название",
+            placeholder=f"Текущее: {voice_channel.name}",
+            max_length=100
+        )
+        self.add_item(self.new_name)
+
+    async def on_submit(self, interaction):
+        await self.voice_channel.edit(name=self.new_name.value)
+        await interaction.response.send_message(
+            f"✅ Канал переименован в: {self.new_name.value}",
+            ephemeral=True
+        )
+
+
+class LimitModal(discord.ui.Modal):
+    def __init__(self, voice_channel):
+        super().__init__(title="Установить лимит участников")
+        self.voice_channel = voice_channel
+        self.limit = discord.ui.TextInput(
+            label="Введите число (0 = без лимита)",
+            placeholder=f"Текущее: {voice_channel.user_limit or 'без лимита'}",
+            max_length=2
+        )
+        self.add_item(self.limit)
+
+    async def on_submit(self, interaction):
+        try:
+            limit = max(0, min(99, int(self.limit.value)))
+            await self.voice_channel.edit(user_limit=limit)
+            await interaction.response.send_message(
+                f"✅ Лимит участников установлен: {limit if limit > 0 else 'без лимита'}",
+                ephemeral=True
+            )
+        except ValueError:
+            await interaction.response.send_message(
+                "❌ Пожалуйста, введите число от 0 до 99",
+                ephemeral=True
+            )
