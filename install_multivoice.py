@@ -1,5 +1,6 @@
 import discord
 from discord.ext import commands
+from discord.ui import Select, View
 import mysql.connector
 from mysql.connector import Error
 from datetime import datetime
@@ -7,6 +8,83 @@ from data import mysqlconf
 
 # Конфиг MySQL (возьмите из основного файла)
 MYSQL_CONFIG = mysqlconf
+
+
+
+class ChannelSettingsMenu(View):
+    def __init__(self, voice_channel):
+        super().__init__(timeout=None)
+        self.voice_channel = voice_channel
+
+        options = [
+            discord.SelectOption(label="Изменить название", value="rename", emoji="✏️"),
+            discord.SelectOption(label="Лимит участников", value="limit", emoji="👥"),
+            discord.SelectOption(label="Закрыть канал", value="lock", emoji="🔒"),
+            discord.SelectOption(label="Открыть канал", value="unlock", emoji="🔓"),
+        ]
+
+        self.select = Select(
+            placeholder="Выберите настройку...",
+            options=options
+        )
+        self.select.callback = self.on_select
+        self.add_item(self.select)
+
+    async def on_select(self, interaction):
+        if interaction.user not in self.voice_channel.members:
+            await interaction.response.send_message("Вы должны быть в голосовом канале!", ephemeral=True)
+            return
+
+        value = self.select.values[0]
+        if value == "rename":
+            modal = RenameModal(self.voice_channel)
+            await interaction.response.send_modal(modal)
+        elif value == "limit":
+            modal = LimitModal(self.voice_channel)
+            await interaction.response.send_modal(modal)
+        elif value == "lock":
+            await self.voice_channel.set_permissions(interaction.guild.default_role, connect=False)
+            await interaction.response.send_message("🔒 Канал закрыт!", ephemeral=True)
+        elif value == "unlock":
+            await self.voice_channel.set_permissions(interaction.guild.default_role, connect=True)
+            await interaction.response.send_message("🔓 Канал открыт!", ephemeral=True)
+
+
+class RenameModal(discord.ui.Modal):
+    def __init__(self, voice_channel):
+        super().__init__(title="Изменение названия")
+        self.voice_channel = voice_channel
+        self.new_name = discord.ui.TextInput(
+            label="Новое название",
+            placeholder=f"Текущее: {voice_channel.name}",
+            max_length=100
+        )
+        self.add_item(self.new_name)
+
+    async def on_submit(self, interaction):
+        await self.voice_channel.edit(name=self.new_name.value)
+        await interaction.response.send_message(f"✅ Название изменено на: {self.new_name.value}", ephemeral=True)
+
+
+class LimitModal(discord.ui.Modal):
+    def __init__(self, voice_channel):
+        super().__init__(title="Лимит участников")
+        self.voice_channel = voice_channel
+        self.limit = discord.ui.TextInput(
+            label="Количество (0 = без лимита)",
+            placeholder=f"Текущее: {voice_channel.user_limit or 'без лимита'}",
+            max_length=2
+        )
+        self.add_item(self.limit)
+
+    async def on_submit(self, interaction):
+        try:
+            limit = int(self.limit.value)
+            await self.voice_channel.edit(user_limit=max(0, min(99, limit)))
+            msg = "✅ Лимит участников: " + (f"{limit}" if limit > 0 else "без лимита")
+            await interaction.response.send_message(msg, ephemeral=True)
+        except ValueError:
+            await interaction.response.send_message("❌ Введите число от 0 до 99", ephemeral=True)
 
 
 class VoiceSystem:
@@ -86,7 +164,7 @@ async def setup(bot: commands.Bot):
             # Создаём триггер-канал (ВНИЗУ категории)
             trigger_channel = await category.create_voice_channel(
                 name="┏[➕]┓🔒Создать",
-                position=1)  # Позиция 1 (после возможных других каналов)
+                position=1)
 
             # Сохраняем в БД
             await system.save_voice_settings(interaction.guild.id, category.id, trigger_channel.id)
@@ -116,11 +194,25 @@ async def setup(bot: commands.Bot):
                 # Создаём новый канал ПОД триггером
                 new_channel = await category.create_voice_channel(
                     name=f"{system.channel_prefix}{member.display_name}",
-                    position=len(category.channels)  # В самый низ
+                    position=len(category.channels)
                 )
                 await member.move_to(new_channel)
 
-            # 2. Удаление пустых каналов (исправленное условие)
+                # Отправляем меню управления в текстовый чат
+                text_channel = discord.utils.get(member.guild.text_channels, name="общий")  # Или другой канал
+                if text_channel:
+                    embed = discord.Embed(
+                        title=f"Управление каналом {new_channel.name}",
+                        description="Используйте меню ниже для настройки вашего голосового канала",
+                        color=discord.Color.blue()
+                    )
+                    await text_channel.send(
+                        content=f"{member.mention}, вот панель управления вашим каналом:",
+                        embed=embed,
+                        view=ChannelSettingsMenu(new_channel)
+                    )
+
+            # 2. Удаление пустых каналов
             if (before.channel
                     and before.channel.category_id == settings['category_id']
                     and before.channel.id != settings['trigger_channel_id']
