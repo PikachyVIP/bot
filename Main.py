@@ -2410,88 +2410,92 @@ class URLControls(discord.ui.View):
     def __init__(self, voice_client, initial_volume, title, duration_str):
         super().__init__(timeout=None)
         self.voice_client = voice_client
-        self.paused = False
         self.volume = initial_volume
-        self.message = None
-        self.lock = asyncio.Lock()
         self.title = title
         self.duration_str = duration_str
+        self.message = None
+        self.lock = asyncio.Lock()
 
-    async def update_embed(self):
-        if not self.message:
-            return
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return True  # Разрешаем всем взаимодействовать
 
-        embed = discord.Embed(
-            title="🎶 Воспроизведение URL",
-            description=f"**{self.title}**",
-            color=discord.Color.blue()
-        )
-        embed.add_field(name="Длительность", value=self.duration_str, inline=True)
-        embed.add_field(name="Громкость", value=f"{self.volume}%", inline=True)
-
+    async def update_controls(self):
         try:
-            await self.message.edit(embed=embed)
-        except discord.NotFound:
-            self.stop()
+            if self.message:
+                embed = discord.Embed(
+                    title="🎶 Воспроизведение URL",
+                    description=f"**{self.title}**",
+                    color=discord.Color.blue()
+                )
+                embed.add_field(name="Длительность", value=self.duration_str)
+                embed.add_field(name="Громкость", value=f"{self.volume}%")
+                await self.message.edit(embed=embed)
+        except Exception as e:
+            print(f"Update error: {e}")
 
     @discord.ui.button(label="⏯", style=discord.ButtonStyle.blurple)
-    async def pause_resume(self, button, interaction):
-        async with self.lock:
-            try:
+    async def pause_resume(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            async with self.lock:
                 if self.voice_client.is_playing():
                     self.voice_client.pause()
-                    self.paused = True
                     button.label = "▶"
                 elif self.voice_client.is_paused():
                     self.voice_client.resume()
-                    self.paused = False
                     button.label = "⏸"
-                await interaction.response.defer(ephemeral=True)
-            except:
-                await interaction.response.defer(ephemeral=True)
+
+                await interaction.response.defer()  # Важно!
+                await self.update_controls()
+        except Exception as e:
+            print(f"Pause error: {e}")
+            await interaction.response.defer()
 
     @discord.ui.button(label="⏹", style=discord.ButtonStyle.red)
-    async def stop(self, button, interaction):
-        async with self.lock:
-            try:
+    async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            async with self.lock:
                 if self.voice_client.is_connected():
-                    self.voice_client.stop()
                     await self.voice_client.disconnect()
                 self.stop()
+                await interaction.response.defer()
                 if self.message:
                     try:
                         await self.message.edit(view=None)
                     except:
                         pass
-                await interaction.response.defer(ephemeral=True)
-            except:
-                await interaction.response.defer(ephemeral=True)
+        except Exception as e:
+            print(f"Stop error: {e}")
+            await interaction.response.defer()
 
     @discord.ui.button(label="🔊", style=discord.ButtonStyle.grey)
-    async def volume_up(self, button, interaction):
-        async with self.lock:
-            try:
+    async def volume_up(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            async with self.lock:
                 self.volume = min(100, self.volume + 10)
                 new_volume = (self.volume / 100) * 0.5
                 if hasattr(self.voice_client.source, 'volume'):
                     self.voice_client.source.volume = new_volume
-                await self.update_embed()
-                await interaction.response.defer(ephemeral=True)
-            except:
-                await interaction.response.defer(ephemeral=True)
+
+                await interaction.response.defer()
+                await self.update_controls()
+        except Exception as e:
+            print(f"Volume up error: {e}")
+            await interaction.response.defer()
 
     @discord.ui.button(label="🔉", style=discord.ButtonStyle.grey)
-    async def volume_down(self, button, interaction):
-        async with self.lock:
-            try:
+    async def volume_down(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            async with self.lock:
                 self.volume = max(0, self.volume - 10)
                 new_volume = (self.volume / 100) * 0.5
                 if hasattr(self.voice_client.source, 'volume'):
                     self.voice_client.source.volume = new_volume
-                await self.update_embed()
-                await interaction.response.defer(ephemeral=True)
-            except:
-                await interaction.response.defer(ephemeral=True)
+
+                await interaction.response.defer()
+                await self.update_controls()
+        except Exception as e:
+            print(f"Volume down error: {e}")
+            await interaction.response.defer()
 
     async def on_timeout(self):
         try:
