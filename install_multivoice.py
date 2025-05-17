@@ -120,10 +120,14 @@ async def setup(bot: commands.Bot):
                 if not category:
                     return
 
-                # Создаем новый канал В САМОМ НИЗУ (под всеми существующими)
+                # Получаем текущую позицию триггер-канала
+                trigger_channel = member.guild.get_channel(settings['trigger_channel_id'])
+                trigger_position = trigger_channel.position
+
+                # Создаем новый канал ПОД триггером (позиция триггера + 1)
                 new_channel = await category.create_voice_channel(
                     name=f"{system.channel_prefix}{member.display_name}",
-                    position=len(category.channels)  # Позиция в самом конце
+                    position=trigger_position + 1  # Позиция сразу под триггером
                 )
                 await member.move_to(new_channel)
 
@@ -140,9 +144,12 @@ async def setup(bot: commands.Bot):
             if (before.channel
                     and before.channel.category_id == settings['category_id']
                     and before.channel.id != settings['trigger_channel_id']
-                    and before.channel.name.startswith(system.channel_prefix)  # Проверяем только по префиксу
                     and len(before.channel.members) == 0):
-                await before.channel.delete()
+
+                try:
+                    await before.channel.delete()
+                except:
+                    pass
 
         except Exception as e:
             print(f"Voice System Error: {e}")
