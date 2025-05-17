@@ -165,10 +165,10 @@ class ChannelControlView(View):
         options = [
             discord.SelectOption(label="Переименовать", value="rename", emoji="✏️"),
             discord.SelectOption(label="Лимит участников", value="limit", emoji="👥"),
-            discord.SelectOption(label="Закрыть канал", value="lock", emoji="🔒"),
-            discord.SelectOption(label="Открыть канал", value="unlock", emoji="🔓"),
-            discord.SelectOption(label="Призрачный режим", value="ghost", emoji="👻"),
-            discord.SelectOption(label="Видимый режим", value="unghost", emoji="👀"),
+          #  discord.SelectOption(label="Закрыть канал", value="lock", emoji="🔒"),
+          #  discord.SelectOption(label="Открыть канал", value="unlock", emoji="🔓"),
+          #  discord.SelectOption(label="Призрачный режим", value="ghost", emoji="👻"),
+          #  discord.SelectOption(label="Видимый режим", value="unghost", emoji="👀"),
             discord.SelectOption(label="Пригласить", value="invite", emoji="✉️"),
             discord.SelectOption(label="Установить статус", value="status", emoji="📝")
         ]
@@ -224,18 +224,63 @@ class ChannelControlView(View):
             )
             await interaction.response.send_message("👀 Канал теперь виден всем!", ephemeral=True)
 
+
         elif value == "invite":
-            # Создаем приглашение
-            invite = await self.voice_channel.create_invite(max_uses=1)
-            try:
-                await self.owner.send(f"🎫 Приглашение в канал: {invite.url}")
-                await interaction.response.send_message("✅ Приглашение отправлено в ЛС!", ephemeral=True)
-            except:
-                await interaction.response.send_message("❌ Не удалось отправить ЛС. Проверьте настройки приватности!",
-                                                        ephemeral=True)
+            await interaction.response.send_modal(InviteModal(self.voice_channel))
+
+
 
         elif value == "status":
             await interaction.response.send_modal(StatusModal(self.voice_channel))
+
+
+class InviteModal(discord.ui.Modal):
+    def __init__(self, voice_channel):
+        super().__init__(title="Отправить приглашение")
+        self.voice_channel = voice_channel
+        self.user = discord.ui.TextInput(
+            label="Упомяните пользователя (@ник)",
+            placeholder="@username",
+            required=True
+        )
+        self.message = discord.ui.TextInput(
+            label="Ваше сообщение",
+            placeholder="Присоединяйся к нашему каналу!",
+            style=discord.TextStyle.long,
+            required=False
+        )
+        self.add_item(self.user)
+        self.add_item(self.message)
+
+    async def on_submit(self, interaction):
+        try:
+            # Получаем пользователя из упоминания
+            user_id = int(self.user.value.replace('<@', '').replace('>', ''))
+            target_user = await interaction.guild.fetch_member(user_id)
+
+            # Создаем приглашение
+            invite = await self.voice_channel.create_invite(
+                max_uses=1,
+                unique=True,
+                reason=f"Приглашение от {interaction.user.display_name}"
+            )
+
+            # Формируем сообщение
+            base_msg = f"🎫 {interaction.user.mention} приглашает вас в голосовой канал!"
+            custom_msg = f"\n\n💬 *{self.message.value}*" if self.message.value else ""
+
+            # Отправляем
+            await target_user.send(f"{base_msg}{custom_msg}\n{invite.url}")
+            await interaction.response.send_message(
+                f"✅ Приглашение отправлено {target_user.mention}!",
+                ephemeral=True
+            )
+
+        except Exception as e:
+            await interaction.response.send_message(
+                f"❌ Ошибка: {e}\nПроверьте правильность @упоминания и настройки приватности!",
+                ephemeral=True
+            )
 
 
 class StatusModal(discord.ui.Modal):
@@ -243,17 +288,26 @@ class StatusModal(discord.ui.Modal):
         super().__init__(title="Установить статус канала")
         self.voice_channel = voice_channel
         self.status = discord.ui.TextInput(
-            label="Введите статус (до 100 символов)",
-            placeholder="Например: Играем в Valorant",
-            max_length=100
+            label="Текст статуса",
+            placeholder="Например: Играем | До 5 человек",
+            style=discord.TextStyle.long,
+            max_length=200  # Лимит описания канала
         )
         self.add_item(self.status)
 
     async def on_submit(self, interaction):
-        # Устанавливаем статус в название канала
-        original_name = self.voice_channel.name.split('|')[0].strip()
-        await self.voice_channel.edit(name=f"{original_name} | {self.status.value}")
-        await interaction.response.send_message(f"📝 Статус установлен: {self.status.value}", ephemeral=True)
+        try:
+            # Устанавливаем статус в описание канала
+            await self.voice_channel.edit(topic=self.status.value)
+            await interaction.response.send_message(
+                f"📝 Статус обновлен: {self.status.value}",
+                ephemeral=True
+            )
+        except Exception as e:
+            await interaction.response.send_message(
+                f"❌ Ошибка: {str(e)}",
+                ephemeral=True
+            )
 
 class RenameModal(discord.ui.Modal):
     def __init__(self, voice_channel):
