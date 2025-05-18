@@ -2419,31 +2419,64 @@ async def update_progress(guild_id):
 
 # Класс для управления воспроизведением URL
 class URLControls(discord.ui.View):
-    def __init__(self, voice_client, initial_volume, title, duration_str):
+    def __init__(self, voice_client, initial_volume, title, duration):
         super().__init__(timeout=None)
         self.voice_client = voice_client
         self.volume = initial_volume
         self.title = title
-        self.duration_str = duration_str
+        self.duration = duration  # Общая длительность в секундах
         self.message = None
         self.lock = asyncio.Lock()
+        self.update_task = None
+
+    async def start_updating(self):
+        """Запускает фоновую задачу для обновления времени."""
+        self.update_task = asyncio.create_task(self.update_time_loop())
+
+    async def update_time_loop(self):
+        """Цикл обновления текущего времени."""
+        while True:
+            if not self.voice_client or not self.voice_client.is_connected():
+                break
+
+            if not self.voice_client.is_playing() and not self.voice_client.is_paused():
+                break
+
+            await self.update_controls()
+            await asyncio.sleep(3)  # Обновление каждую секунду
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return True  # Разрешаем всем взаимодействовать
 
     async def update_controls(self):
+        """Обновляет сообщение с текущим временем."""
         try:
-            if self.message:
-                embed = discord.Embed(
-                    title="🎶 Воспроизведение URL",
-                    description=f"**{self.title}**",
-                    color=discord.Color.blue()
-                )
-                embed.add_field(name="Длительность", value=self.duration_str)
-                embed.add_field(name="Громкость", value=f"{self.volume}%")
-                await self.message.edit(embed=embed)
+            if not self.message:
+                return
+
+            # Получаем текущую позицию воспроизведения (в секундах)
+            current_time = 0
+            if hasattr(self.voice_client, 'source') and hasattr(self.voice_client.source, 'position'):
+                current_time = self.voice_client.source.position
+            elif hasattr(self.voice_client, 'position'):
+                current_time = self.voice_client.position
+
+            # Преобразуем секунды в формат HH:MM:SS
+            current_str = str(timedelta(seconds=int(current_time))).split('.')[0]
+            total_str = str(timedelta(seconds=int(self.duration))).split('.')[0]
+
+            embed = discord.Embed(
+                title="🎶 Воспроизведение URL",
+                description=f"**{self.title}**",
+                color=discord.Color.blue()
+            )
+            embed.add_field(name="Длительность", value=f"{current_str} / {total_str}")
+            embed.add_field(name="Громкость", value=f"{self.volume}%")
+
+            await self.message.edit(embed=embed)
         except Exception as e:
-            print(f"Update error: {e}")
+            print(f"Ошибка обновления: {e}")
+
 
     @discord.ui.button(label="⏯", style=discord.ButtonStyle.blurple)
     async def pause_resume(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -2479,21 +2512,6 @@ class URLControls(discord.ui.View):
             print(f"Stop error: {e}")
             await interaction.response.defer()
 
-    @discord.ui.button(label="🔊", style=discord.ButtonStyle.grey)
-    async def volume_up(self, interaction: discord.Interaction, button: discord.ui.Button):
-        try:
-            async with self.lock:
-                self.volume = min(100, self.volume + 10)
-                new_volume = (self.volume / 100) * 0.5
-                if hasattr(self.voice_client.source, 'volume'):
-                    self.voice_client.source.volume = new_volume
-
-                await interaction.response.defer()
-                await self.update_controls()
-        except Exception as e:
-            print(f"Volume up error: {e}")
-            await interaction.response.defer()
-
     @discord.ui.button(label="🔉", style=discord.ButtonStyle.grey)
     async def volume_down(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
@@ -2509,9 +2527,30 @@ class URLControls(discord.ui.View):
             print(f"Volume down error: {e}")
             await interaction.response.defer()
 
-    async def on_timeout(self):
+    @discord.ui.button(label="🔊", style=discord.ButtonStyle.grey)
+    async def volume_up(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
-            await self.message.edit(view=None)
+            async with self.lock:
+                self.volume = min(100, self.volume + 10)
+                new_volume = (self.volume / 100) * 0.5
+                if hasattr(self.voice_client.source, 'volume'):
+                    self.voice_client.source.volume = new_volume
+
+                await interaction.response.defer()
+                await self.update_controls()
+        except Exception as e:
+            print(f"Volume up error: {e}")
+            await interaction.response.defer()
+
+
+
+    async def on_timeout(self):
+        """Очистка при завершении."""
+        if self.update_task:
+            self.update_task.cancel()
+        try:
+            if self.message:
+                await self.message.edit(view=None)
         except:
             pass
 
@@ -2533,8 +2572,7 @@ async def handle_url_playback(interaction, url, channel, volume):
             info = ydl.extract_info(url, download=False)
             audio_url = info['url']
             title = info.get('title', 'Неизвестный трек')
-            duration = info.get('duration', 0)
-            duration_str = str(timedelta(seconds=duration)).split('.')[0] if duration else '0:00:00'
+            duration = info.get('duration', 0)  # Общая длительность в секундах
 
         final_volume = (vol / 100) * 0.5
         voice_client = await channel.connect()
@@ -2544,10 +2582,10 @@ async def handle_url_playback(interaction, url, channel, volume):
             description=f"**{title}**",
             color=discord.Color.blue()
         )
-        embed.add_field(name="Длительность", value=duration_str, inline=True)
-        embed.add_field(name="Громкость", value=f"{vol}%", inline=True)
+        embed.add_field(name="Длительность", value=f"0:00:00 / {str(timedelta(seconds=duration)).split('.')[0]}")
+        embed.add_field(name="Громкость", value=f"{vol}%")
 
-        controls = URLControls(voice_client, vol, title, duration_str)
+        controls = URLControls(voice_client, vol, title, duration)
         message = await interaction.followup.send(embed=embed, view=controls)
         controls.message = message
 
@@ -2556,11 +2594,14 @@ async def handle_url_playback(interaction, url, channel, volume):
             'options': f'-vn -filter:a volume={final_volume}'
         }
 
+        # Используем FFmpegPCMAudio с возможностью отслеживания позиции
         audio_source = FFmpegPCMAudio(audio_url, **ffmpeg_options)
         audio_source = discord.PCMVolumeTransformer(audio_source)
         audio_source.volume = final_volume
-        voice_client.play(audio_source,
-                         after=lambda e: asyncio.run_coroutine_threadsafe(controls.on_timeout(), bot.loop))
+
+        # Запускаем воспроизведение и обновление времени
+        voice_client.play(audio_source, after=lambda e: asyncio.run_coroutine_threadsafe(controls.on_timeout(), bot.loop))
+        await controls.start_updating()
 
         while voice_client.is_playing() or voice_client.is_paused():
             await asyncio.sleep(1)
