@@ -2484,7 +2484,11 @@ class URLControls(discord.ui.View):
             )
             embed.add_field(
                 name="Состояние",
+<<<<<<< HEAD
                 value="⏸" if self.is_paused else "▶",
+=======
+                value="⏸ Пауза" if self.is_paused else "▶ Воспроизведение",
+>>>>>>> origin/main
                 inline=True
             )
 
@@ -2594,6 +2598,7 @@ async def handle_url_playback(interaction, url, channel, volume):
         final_volume = (vol / 100) * 0.5
         voice_client = await channel.connect()
 
+<<<<<<< HEAD
         # Сначала создаем embed
         embed = discord.Embed(
             title="🎶 Воспроизведение URL",
@@ -2623,6 +2628,14 @@ async def handle_url_playback(interaction, url, channel, volume):
         message = await interaction.followup.send(embed=embed, view=controls)
         controls.message = message  # Сохраняем ссылку на сообщение
         await controls.start_updater()  # Запускаем обновление прогресса
+=======
+        controls = URLControls(voice_client, vol, title, duration, interaction)
+        await controls.update_controls("0:00:00")  # Initial state with 0 time
+
+        message = await interaction.followup.send(embed=controls.message.embeds[0], view=controls)
+        controls.message = message
+        await controls.start_updater()
+>>>>>>> origin/main
 
         ffmpeg_options = {
             'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
