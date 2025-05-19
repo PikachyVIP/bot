@@ -541,7 +541,7 @@ class EventCommands(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def remove_event(self, interaction: discord.Interaction, name: str):
-        """Удаляет событие"""
+        """Удаляет событие и связанные данные"""
         connection = self.get_db_connection()
         if not connection:
             return await interaction.response.send_message(
@@ -551,64 +551,77 @@ class EventCommands(commands.Cog):
 
         cursor = connection.cursor(dictionary=True)
 
-        # Проверяем существование события
-        cursor.execute(
-            "SELECT event_id FROM events WHERE event_name = %s",
-            (name,)
-        )
-        event = cursor.fetchone()
+        try:
+            # Начинаем транзакцию
+            connection.start_transaction()
 
-        if not event:
-            connection.close()
-            return await interaction.response.send_message(
-                f"Событие '{name}' не найдено",
-                ephemeral=True
+            # 1. Находим событие
+            cursor.execute(
+                "SELECT event_id FROM events WHERE event_name = %s",
+                (name,)
             )
+            event = cursor.fetchone()
 
-        # Удаляем сообщение с таймером, если оно существует
-        if event['event_id'] in self.active_messages:
-            try:
-                channel_id = None
-                cursor.execute(
-                    "SELECT channel_id FROM events WHERE event_id = %s",
-                    (event['event_id'],)
+            if not event:
+                await interaction.response.send_message(
+                    f"Событие '{name}' не найдено",
+                    ephemeral=True
                 )
-                event_data = cursor.fetchone()
-                if event_data:
-                    channel_id = event_data['channel_id']
-                    channel = self.bot.get_channel(channel_id)
-                    if channel:
-                        try:
-                            message = await channel.fetch_message(
-                                self.active_messages[event['event_id']]
-                            )
-                            await message.delete()
-                        except:
-                            pass
-            except:
-                pass
-            finally:
-                del self.active_messages[event['event_id']]
+                return
 
-        # Удаляем событие из БД
-        cursor.execute(
-            "DELETE FROM events WHERE event_name = %s",
-            (name,)
-        )
-        connection.commit()
-        affected = cursor.rowcount
-        connection.close()
+            # 2. Удаляем связанные уведомления первыми
+            cursor.execute(
+                "DELETE FROM event_notifications WHERE event_id = %s",
+                (event['event_id'],)
+            )
 
-        if affected:
+            # 3. Удаляем сообщение с таймером, если оно существует
+            if event['event_id'] in self.active_messages:
+                try:
+                    cursor.execute(
+                        "SELECT channel_id FROM events WHERE event_id = %s",
+                        (event['event_id'],)
+                    )
+                    event_data = cursor.fetchone()
+                    if event_data:
+                        channel = self.bot.get_channel(event_data['channel_id'])
+                        if channel:
+                            try:
+                                message = await channel.fetch_message(
+                                    self.active_messages[event['event_id']]
+                                )
+                                await message.delete()
+                            except:
+                                pass
+                except:
+                    pass
+                finally:
+                    del self.active_messages[event['event_id']]
+
+            # 4. Удаляем само событие
+            cursor.execute(
+                "DELETE FROM events WHERE event_name = %s",
+                (name,)
+            )
+
+            # Подтверждаем транзакцию
+            connection.commit()
+
             await interaction.response.send_message(
-                f"Событие '{name}' успешно удалено!",
+                f"✅ Событие '{name}' успешно удалено!",
                 ephemeral=True
             )
-        else:
+
+        except Exception as e:
+            # Откатываем транзакцию при ошибке
+            connection.rollback()
             await interaction.response.send_message(
-                f"Не удалось удалить событие '{name}'",
+                f"❌ Не удалось удалить событие '{name}': {str(e)}",
                 ephemeral=True
             )
+        finally:
+            if connection.is_connected():
+                connection.close()
 
     @tasks.loop(minutes=1)
     async def update_timers(self):

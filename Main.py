@@ -121,10 +121,12 @@ def init_db():
 
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS event_notifications (
-                    event_id INT PRIMARY KEY,
-                    notified BOOLEAN DEFAULT 0,
-                    FOREIGN KEY (event_id) REFERENCES events(event_id)
-                )
+                    notification_id INT AUTO_INCREMENT PRIMARY KEY,
+                    event_id INT NOT NULL,
+                    notification_date DATETIME NOT NULL,
+                    notified BOOLEAN DEFAULT FALSE,
+                    FOREIGN KEY (event_id) REFERENCES events(event_id) ON DELETE CASCADE
+                );
             """)
 
             cursor.execute("""
