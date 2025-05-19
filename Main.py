@@ -21,7 +21,7 @@ from Calendar import setup_event_commands
 from install_multivoice import setup
 import ffmpeg
 
-    
+
 
 TOKEN = token
 ASSETTOKEN = assettoken

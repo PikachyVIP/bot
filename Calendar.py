@@ -52,7 +52,28 @@ def init_event_tables():
 
 init_event_tables()
 
+async def check_command_access_app(interaction: discord.Interaction) -> bool:
+    """Адаптированная функция проверки прав для слэш-команд"""
+    # Владелец бота имеет полный доступ
+    if await interaction.client.is_owner(interaction.user):
+        return True
 
+    # Проверка прав в БД
+    conn = get_db_connection()
+    if not conn:
+        return False
+
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT 1 FROM command_access 
+            WHERE user_id = %s AND command_name = %s
+        """, (interaction.user.id, interaction.command.name.lower()))
+        return cursor.fetchone() is not None
+    except Error:
+        return False
+    finally:
+        conn.close()
 async def update_event_config(guild_id: int, channel_id: int, category_id: int):
     conn = get_db_connection()
     if conn:
