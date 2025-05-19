@@ -182,41 +182,37 @@ class EventCommands(commands.Cog):
                 ephemeral=True
             )
 
-    # В методе send_notification (используем log_channel_id):
     async def send_notification(self, event):
         """Отправляет уведомление о наступлении события"""
         connection = self.get_db_connection()
         if not connection:
-            print("Не удалось подключиться к БД")
+            print("❌ Не удалось подключиться к БД")
             return
 
         try:
             cursor = connection.cursor(dictionary=True)
 
-            # Упрощенный запрос для получения log_channel_id
+            # Упрощённый запрос: ищем log_channel_id по channel_id события
             cursor.execute("""
-                SELECT log_channel_id FROM event_config 
-                WHERE guild_id IN (
-                    SELECT guild_id FROM event_config 
-                    WHERE channel_id = %s
-                    LIMIT 1
-                )
+                SELECT log_channel_id 
+                FROM event_config 
+                WHERE channel_id = %s
                 LIMIT 1
             """, (event['channel_id'],))
 
             config = cursor.fetchone()
-            print(f"Результат запроса log_channel: {config}")  # Для отладки
 
-            if not config or not config.get('log_channel_id'):
-                print("Лог-канал не найден в конфиге")
+            # Проверяем, что log_channel_id существует
+            if not config or 'log_channel_id' not in config:
+                print("❌ Лог-канал не найден в конфиге")
                 return
 
             log_channel = self.bot.get_channel(config['log_channel_id'])
             if not log_channel:
-                print(f"Не удалось найти канал с ID {config['log_channel_id']}")
+                print(f"❌ Канал с ID {config['log_channel_id']} не найден")
                 return
 
-            # Обработка получателей
+            # Формируем список упоминаний (@everyone, @роль, @пользователь)
             recipients = json.loads(event['recipients'])
             mentions = []
             for r in recipients:
@@ -227,42 +223,32 @@ class EventCommands(commands.Cog):
                     role = log_channel.guild.get_role(role_id)
                     if role:
                         mentions.append(role.mention)
-                    else:
-                        print(f"Роль {role_id} не найдена")
                 elif r.startswith("user:"):
                     user_id = int(r.split(":")[1])
                     user = log_channel.guild.get_member(user_id)
                     if user:
                         mentions.append(user.mention)
-                    else:
-                        print(f"Пользователь {user_id} не найден")
 
-            loop_text = LoopInterval[event['loop_interval']].value if event['loop_interval'] else "без повтора"
-
+            # Создаём embed-сообщение
             embed = discord.Embed(
                 title="🔔 Событие началось!",
                 description=(
                     f"**Название:** {event['event_name']}\n"
-                    f"**Тип:** {loop_text}\n"
+                    f"**Тип:** {LoopInterval[event['loop_interval']].value if event['loop_interval'] else 'без повтора'}\n"
                     f"**Для:** {' '.join(mentions) if mentions else 'всех участников'}"
                 ),
                 color=discord.Color.green()
             )
 
-            # Отправка сообщения с проверкой прав
-            try:
-                await log_channel.send(
-                    content=' '.join(mentions) if mentions else None,
-                    embed=embed
-                )
-                print("Уведомление успешно отправлено")
-            except discord.Forbidden:
-                print("Нет прав для отправки сообщений в канал")
-            except discord.HTTPException as e:
-                print(f"Ошибка при отправке: {e}")
+            # Отправляем сообщение
+            await log_channel.send(
+                content=' '.join(mentions) if mentions else None,
+                embed=embed
+            )
+            print("✅ Уведомление отправлено")
 
         except Exception as e:
-            print(f"Критическая ошибка в send_notification: {str(e)}")
+            print(f"⚠️ Ошибка: {e}")
         finally:
             if connection.is_connected():
                 connection.close()
@@ -785,7 +771,7 @@ class EventCommands(commands.Cog):
         # Обработка кнопки "Показать список"
         elif custom_id.startswith('show_list_'):
             event_id = int(custom_id.split('_')[2])
-            await self.show_event_list(interaction, event_id)
+            await self.list_events(self , interaction)
 
     async def update_single_timer(self, interaction: discord.Interaction, event_id: int):
         """Обновляет таймер для конкретного события"""
