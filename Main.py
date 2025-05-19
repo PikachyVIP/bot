@@ -2484,11 +2484,21 @@ class URLControls(discord.ui.View):
             )
             embed.add_field(
                 name="Состояние",
-                value="⏸" if self.is_paused else "▶",
+                value="⏸ Пауза" if self.is_paused else "▶ Воспроизведение",
                 inline=True
             )
 
-            await self.message.edit(embed=embed)
+            # Пытаемся обновить сообщение, при ошибке - создаем новое
+            try:
+                await self.message.edit(embed=embed, view=self)
+            except discord.NotFound:
+                # Если сообщение было удалено, создаем новое
+                self.message = await self.message.channel.send(embed=embed, view=self)
+            except discord.HTTPException as e:
+                if e.code == 50027:  # Invalid Webhook Token
+                    self.message = await self.message.channel.send(embed=embed, view=self)
+                else:
+                    raise
         except Exception as e:
             print(f"Update error: {e}")
 
@@ -2499,12 +2509,12 @@ class URLControls(discord.ui.View):
                 if self.voice_client.is_playing():
                     self.voice_client.pause()
                     self.is_paused = True
-                    self.pause_time = asyncio.get_event_loop().time()  # Исправлено здесь
+                    self.pause_time = asyncio.get_event_loop().time()
                     button.label = "▶"
                 elif self.voice_client.is_paused():
                     self.voice_client.resume()
                     self.is_paused = False
-                    self.pause_duration += asyncio.get_event_loop().time() - self.pause_time  # Исправлено здесь
+                    self.pause_duration += asyncio.get_event_loop().time() - self.pause_time
                     button.label = "⏸"
 
                 await interaction.response.defer()
