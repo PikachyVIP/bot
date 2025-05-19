@@ -145,13 +145,27 @@ class EventCommands(commands.Cog):
             connection = self.get_db_connection()
             if connection:
                 cursor = connection.cursor()
+
+                # Обновляем структуру таблицы (добавляем log_channel_id если его нет)
                 cursor.execute("""
-                    INSERT INTO event_config (guild_id, channel_id, category_id)
-                    VALUES (%s, %s, %s)
+                    CREATE TABLE IF NOT EXISTS event_config (
+                        guild_id BIGINT PRIMARY KEY,
+                        channel_id BIGINT NOT NULL,
+                        log_channel_id BIGINT NOT NULL,
+                        category_id BIGINT NOT NULL
+                    )
+                """)
+
+                # Вставляем данные (теперь с log_channel_id)
+                cursor.execute("""
+                    INSERT INTO event_config (guild_id, channel_id, log_channel_id, category_id)
+                    VALUES (%s, %s, %s, %s)
                     ON DUPLICATE KEY UPDATE
                     channel_id = VALUES(channel_id),
+                    log_channel_id = VALUES(log_channel_id),
                     category_id = VALUES(category_id)
-                """, (guild.id, main_channel.id, category.id))
+                """, (guild.id, main_channel.id, log_channel.id, category.id))
+
                 connection.commit()
                 connection.close()
 
@@ -168,6 +182,7 @@ class EventCommands(commands.Cog):
                 ephemeral=True
             )
 
+    # В методе send_notification (используем log_channel_id):
     async def send_notification(self, event):
         """Отправляет уведомление о наступлении события"""
         connection = self.get_db_connection()
@@ -177,15 +192,15 @@ class EventCommands(commands.Cog):
         try:
             cursor = connection.cursor(dictionary=True)
 
-            # Получаем канал для логов
+            # Получаем лог-канал напрямую из event_config
             cursor.execute("""
-                SELECT channel_id FROM event_config 
-                WHERE guild_id = (SELECT guild_id FROM channels WHERE channel_id = %s)
-            """, (event['channel_id'],))
+                SELECT log_channel_id FROM event_config 
+                WHERE guild_id = (SELECT guild_id FROM events WHERE event_id = %s)
+            """, (event['event_id'],))
             config = cursor.fetchone()
 
-            if config and config['channel_id']:
-                log_channel = self.bot.get_channel(config['channel_id'])
+            if config and config['log_channel_id']:
+                log_channel = self.bot.get_channel(config['log_channel_id'])
                 if log_channel:
                     recipients = json.loads(event['recipients'])
                     mentions = []

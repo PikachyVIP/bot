@@ -114,6 +114,7 @@ def init_db():
                 CREATE TABLE IF NOT EXISTS event_config (
                     guild_id BIGINT PRIMARY KEY,
                     channel_id BIGINT NOT NULL,
+                    log_channel_id BIGINT NOT NULL,
                     category_id BIGINT NOT NULL
                 )
             """)
