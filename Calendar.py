@@ -1,3 +1,6 @@
+import re
+from enum import Enum
+
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
@@ -8,6 +11,30 @@ import json
 from typing import Optional, Literal, Union
 from mysql.connector import Error
 from data import mysqlconf
+
+class LoopInterval(Enum):
+    NONE = "без повтора"
+    WEEKLY = "каждую неделю"
+    MONTHLY = "каждый месяц"
+    YEARLY = "каждый год"
+
+
+
+def calculate_next_date(self, original_date: datetime, interval: str) -> datetime:
+    """Вычисляет следующую дату события"""
+    if interval == LoopInterval.WEEKLY.name:
+        return original_date + timedelta(weeks=1)
+    elif interval == LoopInterval.MONTHLY.name:
+        # Безопасное добавление месяца
+        next_month = original_date.month + 1
+        next_year = original_date.year
+        if next_month > 12:
+            next_month = 1
+            next_year += 1
+        return original_date.replace(year=next_year, month=next_month)
+    elif interval == LoopInterval.YEARLY.name:
+        return original_date.replace(year=original_date.year + 1)
+    return original_date
 
 
 class EventCommands(commands.Cog):
@@ -44,13 +71,26 @@ class EventCommands(commands.Cog):
             for event in events
         ]
 
+
+    async def loop_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str
+    ) -> list[app_commands.Choice[str]]:
+        return [
+            app_commands.Choice(name=interval.value, value=interval.name)
+            for interval in LoopInterval
+            if current.lower() in interval.value.lower()
+        ]
+
     @app_commands.command(name="event", description="Управление событиями")
     @app_commands.describe(
         action="Выберите действие",
         name="Название события",
-        date="Дата события в формате DD:MM:YYYY",
-        time="Время события в формате HH:MM",
-        recipients="Укажите пользователей, роли или all для всех"
+        date="Дата в формате DD:MM:YYYY",
+        time="Время в формате HH:MM",
+        loop="Повторение события",
+        recipients="Укажите получателей (@user, @role или all)"
     )
     @app_commands.choices(action=[
         app_commands.Choice(name="install", value="install"),
@@ -58,7 +98,7 @@ class EventCommands(commands.Cog):
         app_commands.Choice(name="list", value="list"),
         app_commands.Choice(name="remove", value="remove")
     ])
-    @app_commands.autocomplete(name=event_autocomplete)
+    @app_commands.autocomplete(name=event_autocomplete, loop=loop_autocomplete)
     async def event_command(
             self,
             interaction: discord.Interaction,
@@ -66,25 +106,16 @@ class EventCommands(commands.Cog):
             name: Optional[str] = None,
             date: Optional[str] = None,
             time: Optional[str] = None,
+            loop: Optional[str] = None,
             recipients: Optional[str] = None
     ):
         if action == "install":
             await self.install_event_system(interaction)
         elif action == "create":
-            if not all([name, date, time, recipients]):
-                return await interaction.response.send_message(
-                    "Для создания события нужно указать: название, дату, время и получателей",
-                    ephemeral=True
-                )
-            await self.create_event(interaction, name, date, time, recipients)
+            await self.create_event(interaction, name, date, time, loop, recipients)
         elif action == "list":
             await self.list_events(interaction)
         elif action == "remove":
-            if not name:
-                return await interaction.response.send_message(
-                    "Укажите название события для удаления",
-                    ephemeral=True
-                )
             await self.remove_event(interaction, name)
 
     async def install_event_system(self, interaction: discord.Interaction):
@@ -137,37 +168,81 @@ class EventCommands(commands.Cog):
                 ephemeral=True
             )
 
-    async def create_event(self, interaction: discord.Interaction, name: str, date: str, time: str, recipients: str):
-        """Создает новое событие с указанием времени"""
+    async def send_notification(self, event):
+        """Отправляет уведомление о наступлении события"""
+        connection = self.get_db_connection()
+        if not connection:
+            return
+
         try:
+            cursor = connection.cursor(dictionary=True)
+
+            # Получаем канал для логов
+            cursor.execute("""
+                SELECT channel_id FROM event_config 
+                WHERE guild_id = (SELECT guild_id FROM channels WHERE channel_id = %s)
+            """, (event['channel_id'],))
+            config = cursor.fetchone()
+
+            if config and config['channel_id']:
+                log_channel = self.bot.get_channel(config['channel_id'])
+                if log_channel:
+                    recipients = json.loads(event['recipients'])
+                    mentions = []
+                    for r in recipients:
+                        if r == "all":
+                            mentions.append("@everyone")
+                        elif r.startswith("role:"):
+                            role_id = int(r.split(":")[1])
+                            mentions.append(f"<@&{role_id}>")
+                        elif r.startswith("user:"):
+                            user_id = int(r.split(":")[1])
+                            mentions.append(f"<@{user_id}>")
+
+                    loop_text = LoopInterval[event['loop_interval']].value if event['loop_interval'] else "без повтора"
+
+                    await log_channel.send(
+                        f"**🔔 Событие наступило!**\n"
+                        f"**Название:** {event['event_name']}\n"
+                        f"**Повтор:** {loop_text}\n"
+                        f"**Для:** {' '.join(mentions)}"
+                    )
+        finally:
+            if connection.is_connected():
+                connection.close()
+
+
+    async def create_event(
+            self,
+            interaction: discord.Interaction,
+            name: str,
+            date: str,
+            time: str,
+            loop: str,
+            recipients: str
+    ):
+        """Создание циклического события"""
+        try:
+            # Проверка формата времени
+            if not re.match(r'^\d{2}:\d{2}$', time):
+                return await interaction.response.send_message(
+                    "⏰ Неверный формат времени. Используйте HH:MM (например 15:30)",
+                    ephemeral=True
+                )
+
             # Парсим дату и время
             event_datetime = datetime.strptime(f"{date} {time}", "%d:%m:%Y %H:%M")
 
-            if event_datetime < datetime.now():
+            connection = self.get_db_connection()
+            if not connection:
                 return await interaction.response.send_message(
-                    "Дата и время события не могут быть в прошлом",
+                    "⚠️ Ошибка подключения к БД",
                     ephemeral=True
                 )
-        except ValueError:
-            return await interaction.response.send_message(
-                "Неверный формат даты/времени. Используйте:\n"
-                "Дата: DD:MM:YYYY (например 25:12:2024)\n"
-                "Время: HH:MM (например 15:30)",
-                ephemeral=True
-            )
 
-        # Получаем ID канала событий из event_config
-        connection = self.get_db_connection()
-        if not connection:
-            return await interaction.response.send_message(
-                "Ошибка подключения к БД",
-                ephemeral=True
-            )
+            cursor = connection.cursor(dictionary=True)
 
-        cursor = connection.cursor(dictionary=True)
-
-        try:
-            # Получаем конфигурацию сервера
+            # Проверяем конфигурацию сервера
             cursor.execute(
                 "SELECT channel_id FROM event_config WHERE guild_id = %s",
                 (interaction.guild.id,)
@@ -176,13 +251,11 @@ class EventCommands(commands.Cog):
 
             if not config:
                 return await interaction.response.send_message(
-                    "Сначала выполните /event install",
+                    "🔧 Сначала выполните /event install",
                     ephemeral=True
                 )
 
-            channel_id = config['channel_id']
-
-            # Обрабатываем получателей
+            # Обработка получателей
             recipient_data = []
             if recipients.lower() == "all":
                 recipient_data = ["all"]
@@ -200,7 +273,7 @@ class EventCommands(commands.Cog):
 
             if not recipient_data:
                 return await interaction.response.send_message(
-                    "Не указаны получатели или указаны некорректно",
+                    "👥 Не указаны получатели или указаны некорректно",
                     ephemeral=True
                 )
 
@@ -210,61 +283,167 @@ class EventCommands(commands.Cog):
                     event_name,
                     event_date,
                     recipients,
-                    channel_id
-                ) VALUES (%s, %s, %s, %s)
+                    channel_id,
+                    loop_interval
+                ) VALUES (%s, %s, %s, %s, %s)
             """, (
                 name,
                 event_datetime,
                 json.dumps(recipient_data),
-                channel_id
+                config['channel_id'],
+                loop
             ))
             connection.commit()
             event_id = cursor.lastrowid
 
             # Создаем сообщение с таймером
-            time_left = event_datetime - datetime.now()
-            days = time_left.days
-            hours, remainder = divmod(time_left.seconds, 3600)
-            minutes, _ = divmod(remainder, 60)
-
-            embed = discord.Embed(
-                title=f"Событие: {name}",
-                description=f"Дата: {event_datetime.strftime('%d.%m.%Y %H:%M')}\n"
-                            f"Осталось: {days} дней, {hours} часов, {minutes} минут",
-                color=discord.Color.blue()
-            )
-
-            view = discord.ui.View()
-            view.add_item(discord.ui.Button(
-                style=discord.ButtonStyle.primary,
-                label="Обновить таймер",
-                custom_id=f"update_timer_{event_id}"
-            ))
-            view.add_item(discord.ui.Button(
-                style=discord.ButtonStyle.secondary,
-                label="Показать список",
-                custom_id=f"show_list_{event_id}"
-            ))
-
-            event_channel = self.bot.get_channel(channel_id)
+            event_channel = self.bot.get_channel(config['channel_id'])
             if event_channel:
+                time_left = event_datetime - datetime.now()
+                days = time_left.days
+                hours, remainder = divmod(time_left.seconds, 3600)
+                minutes, _ = divmod(remainder, 60)
+
+                loop_text = LoopInterval[loop].value if loop else "без повтора"
+
+                embed = discord.Embed(
+                    title=f"🔔 Событие: {name}",
+                    description=(
+                        f"**🗓 Дата:** {event_datetime.strftime('%d.%m.%Y %H:%M')}\n"
+                        f"**⏳ Осталось:** {days} дней, {hours} часов, {minutes} минут\n"
+                        f"**🔄 Повтор:** {loop_text}"
+                    ),
+                    color=discord.Color.gold()
+                )
+
+                view = discord.ui.View()
+                view.add_item(discord.ui.Button(
+                    style=discord.ButtonStyle.primary,
+                    label="🔄 Обновить таймер",
+                    custom_id=f"update_timer_{event_id}"
+                ))
+                view.add_item(discord.ui.Button(
+                    style=discord.ButtonStyle.secondary,
+                    label="📋 Показать список",
+                    custom_id=f"show_list_{event_id}"
+                ))
+
                 message = await event_channel.send(embed=embed, view=view)
                 self.active_messages[event_id] = message.id
+
                 await interaction.response.send_message(
-                    f"Событие '{name}' успешно создано на {event_datetime.strftime('%d.%m.%Y %H:%M')}!",
+                    f"✅ Событие '{name}' создано!\n"
+                    f"Следующее выполнение: {event_datetime.strftime('%d.%m.%Y %H:%M')}\n"
+                    f"Повтор: {loop_text}",
                     ephemeral=True
                 )
             else:
                 await interaction.response.send_message(
-                    "Канал событий не найден",
+                    "❌ Канал событий не найден",
                     ephemeral=True
                 )
 
-        except mysql.connector.Error as e:
+        except Exception as e:
             await interaction.response.send_message(
-                f"Ошибка при создании события: {str(e)}",
+                f"⚠️ Ошибка: {str(e)}",
                 ephemeral=True
             )
+        finally:
+            if connection and connection.is_connected():
+                connection.close()
+
+    @tasks.loop(minutes=1)
+    async def update_timers(self):
+        """Обновление циклических событий"""
+        connection = self.get_db_connection()
+        if not connection:
+            return
+
+        cursor = connection.cursor(dictionary=True)
+
+        try:
+            # Получаем все активные события
+            cursor.execute("SELECT * FROM events")
+            events = cursor.fetchall()
+
+            for event in events:
+                event_datetime = event['event_date']
+                now = datetime.now()
+
+                # Если событие наступило
+                if event_datetime <= now:
+                    # Отправляем уведомление
+                    await self.send_notification(event)
+
+                    # Обновляем дату для повторяющихся событий
+                    if event['loop_interval'] and event['loop_interval'] != 'NONE':
+                        new_date = calculate_next_date(
+                            event_datetime,
+                            event['loop_interval']
+                        )
+
+                        cursor.execute("""
+                            UPDATE events SET event_date = %s
+                            WHERE event_id = %s
+                        """, (new_date, event['event_id']))
+                        connection.commit()
+
+                        # Обновляем сообщение с таймером
+                        if event['event_id'] in self.active_messages:
+                            try:
+                                channel = self.bot.get_channel(event['channel_id'])
+                                if channel:
+                                    message = await channel.fetch_message(
+                                        self.active_messages[event['event_id']]
+                                    )
+
+                                    time_left = new_date - datetime.now()
+                                    days = time_left.days
+                                    hours, remainder = divmod(time_left.seconds, 3600)
+                                    minutes, _ = divmod(remainder, 60)
+
+                                    loop_text = LoopInterval[event['loop_interval']].value if event[
+                                        'loop_interval'] else "без повтора"
+
+                                    embed = discord.Embed(
+                                        title=f"🔔 Событие: {event['event_name']}",
+                                        description=(
+                                            f"**🗓 Дата:** {new_date.strftime('%d.%m.%Y %H:%M')}\n"
+                                            f"**⏳ Осталось:** {days} дней, {hours} часов, {minutes} минут\n"
+                                            f"**🔄 Повтор:** {loop_text}"
+                                        ),
+                                        color=discord.Color.gold()
+                                    )
+
+                                    view = discord.ui.View()
+                                    view.add_item(discord.ui.Button(
+                                        style=discord.ButtonStyle.primary,
+                                        label="🔄 Обновить таймер",
+                                        custom_id=f"update_timer_{event['event_id']}"
+                                    ))
+                                    view.add_item(discord.ui.Button(
+                                        style=discord.ButtonStyle.secondary,
+                                        label="📋 Показать список",
+                                        custom_id=f"show_list_{event['event_id']}"
+                                    ))
+
+                                    await message.edit(embed=embed, view=view)
+                            except Exception as e:
+                                print(f"Ошибка обновления сообщения: {e}")
+                    else:
+                        # Для неповторяющихся событий удаляем сообщение
+                        if event['event_id'] in self.active_messages:
+                            try:
+                                channel = self.bot.get_channel(event['channel_id'])
+                                if channel:
+                                    message = await channel.fetch_message(
+                                        self.active_messages[event['event_id']]
+                                    )
+                                    await message.delete()
+                            except:
+                                pass
+                            finally:
+                                del self.active_messages[event['event_id']]
         finally:
             if connection.is_connected():
                 connection.close()
@@ -410,119 +589,140 @@ class EventCommands(commands.Cog):
         cursor = connection.cursor(dictionary=True)
 
         # Обновляем активные таймеры
-        cursor.execute("""
-            SELECT * FROM events 
-            WHERE event_date > NOW()
-        """)
-        active_events = cursor.fetchall()
+        cursor.execute("SELECT * FROM events")
+        all_events = cursor.fetchall()
 
-        for event in active_events:
-            if event['event_id'] not in self.active_messages:
-                continue
+        for event in all_events:
+            event_date = event['event_date']
+            now = datetime.now()
 
-            try:
-                channel = self.bot.get_channel(event['channel_id'])
-                if not channel:
-                    continue
-
-                message = await channel.fetch_message(
-                    self.active_messages[event['event_id']]
-                )
-
-                event_date = event['event_date']
-                time_left = event_date - datetime.now()
+            # Если событие в будущем или сегодня
+            if event_date > now:
+                time_left = event_date - now
                 days = time_left.days
                 hours, remainder = divmod(time_left.seconds, 3600)
                 minutes, _ = divmod(remainder, 60)
 
-                embed = discord.Embed(
-                    title=f"Событие: {event['event_name']}",
-                    description=f"Дата: {event_date.strftime('%d.%m.%Y')}\n"
-                                f"Осталось: {days} дней, {hours} часов, {minutes} минут",
-                    color=discord.Color.blue()
-                )
-
-                view = discord.ui.View()
-                view.add_item(discord.ui.Button(
-                    style=discord.ButtonStyle.primary,
-                    label="Обновить таймер",
-                    custom_id=f"update_timer_{event['event_id']}"
-                ))
-                view.add_item(discord.ui.Button(
-                    style=discord.ButtonStyle.secondary,
-                    label="Показать список",
-                    custom_id=f"show_list_{event['event_id']}"
-                ))
-
-                await message.edit(embed=embed, view=view)
-            except:
-                continue
-
-        # Проверяем наступившие события
-        cursor.execute("""
-            SELECT * FROM events 
-            WHERE event_date <= NOW() + INTERVAL 1 MINUTE
-            AND event_date > NOW() - INTERVAL 1 MINUTE
-        """)
-        triggered_events = cursor.fetchall()
-
-        for event in triggered_events:
-            try:
-                # Получаем канал для логов
-                cursor.execute("""
-                    SELECT channel_id FROM event_config 
-                    WHERE guild_id = (SELECT guild_id FROM channels WHERE channel_id = %s)
-                """, (event['channel_id'],))
-                config = cursor.fetchone()
-
-                if not config:
-                    continue
-
-                log_channel = self.bot.get_channel(config['channel_id'])
-                if not log_channel:
-                    continue
-
-                # Формируем сообщение о наступлении события
-                recipients = json.loads(event['recipients'])
-                mentions = []
-                for r in recipients:
-                    if r == "all":
-                        mentions.append("@everyone")
-                    elif r.startswith("role:"):
-                        role_id = int(r.split(":")[1])
-                        mentions.append(f"<@&{role_id}>")
-                    elif r.startswith("user:"):
-                        user_id = int(r.split(":")[1])
-                        mentions.append(f"<@{user_id}>")
-
-                await log_channel.send(
-                    f"**Событие наступило!**\n"
-                    f"Название: {event['event_name']}\n"
-                    f"Для: {' '.join(mentions)}"
-                )
-
-                # Удаляем сообщение с таймером
+                # Обновляем сообщение с таймером
                 if event['event_id'] in self.active_messages:
                     try:
                         channel = self.bot.get_channel(event['channel_id'])
                         if channel:
-                            message = await channel.fetch_message(
-                                self.active_messages[event['event_id']]
-                            )
-                            await message.delete()
-                    except:
-                        pass
-                    finally:
-                        del self.active_messages[event['event_id']]
+                            message = await channel.fetch_message(self.active_messages[event['event_id']])
 
-                # Удаляем событие из БД
-                cursor.execute(
-                    "DELETE FROM events WHERE event_id = %s",
-                    (event['event_id'],)
-                )
-                connection.commit()
-            except:
-                continue
+                            embed = discord.Embed(
+                                title=f"Событие: {event['event_name']}",
+                                description=f"Дата: {event_date.strftime('%d.%m.%Y %H:%M')}\n"
+                                            f"Осталось: {days} дней, {hours} часов, {minutes} минут",
+                                color=discord.Color.blue()
+                            )
+
+                            view = discord.ui.View()
+                            view.add_item(discord.ui.Button(
+                                style=discord.ButtonStyle.primary,
+                                label="Обновить таймер",
+                                custom_id=f"update_timer_{event['event_id']}"
+                            ))
+                            view.add_item(discord.ui.Button(
+                                style=discord.ButtonStyle.secondary,
+                                label="Показать список",
+                                custom_id=f"show_list_{event['event_id']}"
+                            ))
+
+                            await message.edit(embed=embed, view=view)
+                    except:
+                        continue
+
+            # Если событие уже прошло
+            else:
+                # Проверяем, нужно ли отправлять уведомление
+                cursor.execute("""
+                    SELECT 1 FROM event_notifications 
+                    WHERE event_id = %s AND notified = 1
+                """, (event['event_id'],))
+                already_notified = cursor.fetchone()
+
+                if not already_notified:
+                    # Отправляем уведомление в лог-канал
+                    try:
+                        cursor.execute("""
+                            SELECT channel_id FROM event_config 
+                            WHERE guild_id = (SELECT guild_id FROM channels WHERE channel_id = %s)
+                        """, (event['channel_id'],))
+                        config = cursor.fetchone()
+
+                        if config:
+                            log_channel = self.bot.get_channel(config['channel_id'])
+                            if log_channel:
+                                recipients = json.loads(event['recipients'])
+                                mentions = []
+                                for r in recipients:
+                                    if r == "all":
+                                        mentions.append("@everyone")
+                                    elif r.startswith("role:"):
+                                        role_id = int(r.split(":")[1])
+                                        mentions.append(f"<@&{role_id}>")
+                                    elif r.startswith("user:"):
+                                        user_id = int(r.split(":")[1])
+                                        mentions.append(f"<@{user_id}>")
+
+                                await log_channel.send(
+                                    f"**Событие наступило!**\n"
+                                    f"Название: {event['event_name']}\n"
+                                    f"Для: {' '.join(mentions)}"
+                                )
+
+                                # Помечаем как уведомленное
+                                cursor.execute("""
+                                    INSERT INTO event_notifications (event_id, notified)
+                                    VALUES (%s, 1)
+                                    ON DUPLICATE KEY UPDATE notified = 1
+                                """, (event['event_id'],))
+                                connection.commit()
+                    except Exception as e:
+                        print(f"Ошибка при отправке уведомления: {e}")
+
+                    # Обновляем таймер для следующего года
+                    next_year_date = event_date.replace(year=event_date.year + 1)
+                    cursor.execute("""
+                        UPDATE events SET event_date = %s
+                        WHERE event_id = %s
+                    """, (next_year_date, event['event_id']))
+                    connection.commit()
+
+                    # Обновляем сообщение с таймером
+                    if event['event_id'] in self.active_messages:
+                        try:
+                            channel = self.bot.get_channel(event['channel_id'])
+                            if channel:
+                                time_left = next_year_date - datetime.now()
+                                days = time_left.days
+                                hours, remainder = divmod(time_left.seconds, 3600)
+                                minutes, _ = divmod(remainder, 60)
+
+                                embed = discord.Embed(
+                                    title=f"Событие: {event['event_name']} (следующее)",
+                                    description=f"Дата: {next_year_date.strftime('%d.%m.%Y %H:%M')}\n"
+                                                f"Осталось: {days} дней, {hours} часов, {minutes} минут",
+                                    color=discord.Color.blue()
+                                )
+
+                                view = discord.ui.View()
+                                view.add_item(discord.ui.Button(
+                                    style=discord.ButtonStyle.primary,
+                                    label="Обновить таймер",
+                                    custom_id=f"update_timer_{event['event_id']}"
+                                ))
+                                view.add_item(discord.ui.Button(
+                                    style=discord.ButtonStyle.secondary,
+                                    label="Показать список",
+                                    custom_id=f"show_list_{event['event_id']}"
+                                ))
+
+                                message = await channel.fetch_message(self.active_messages[event['event_id']])
+                                await message.edit(embed=embed, view=view)
+                        except:
+                            pass
 
         connection.close()
 
@@ -551,36 +751,98 @@ class EventCommands(commands.Cog):
         connection = self.get_db_connection()
         if not connection:
             return await interaction.followup.send(
-                "Ошибка подключения к БД",
+                "⚠️ Ошибка подключения к БД",
                 ephemeral=True
             )
 
-        cursor = connection.cursor(dictionary=True)
-        cursor.execute(
-            "SELECT * FROM events WHERE event_id = %s",
-            (event_id,)
-        )
-        event = cursor.fetchone()
-        connection.close()
+        try:
+            cursor = connection.cursor(dictionary=True)
+            cursor.execute(
+                "SELECT * FROM events WHERE event_id = %s",
+                (event_id,)
+            )
+            event = cursor.fetchone()
 
-        if not event:
-            return await interaction.followup.send(
-                "Событие не найдено",
+            if not event:
+                return await interaction.followup.send(
+                    "❌ Событие не найдено",
+                    ephemeral=True
+                )
+
+            event_date = event['event_date']
+            now = datetime.now()
+
+            # Если событие уже прошло, переносим на следующий год
+            if event_date < now:
+                event_date = event_date.replace(year=event_date.year + 1)
+                cursor.execute(
+                    "UPDATE events SET event_date = %s WHERE event_id = %s",
+                    (event_date, event_id)
+                )
+                connection.commit()
+
+            time_left = event_date - now
+            days = time_left.days
+            hours, remainder = divmod(time_left.seconds, 3600)
+            minutes, _ = divmod(remainder, 60)
+
+            # Обновляем сообщение
+            channel = self.bot.get_channel(event['channel_id'])
+            if channel:
+                try:
+                    message = await channel.fetch_message(
+                        self.active_messages[event_id]
+                    )
+
+                    embed = discord.Embed(
+                        title=f"🔔 Событие: {event['event_name']}",
+                        description=(
+                            f"**🗓 Дата:** {event_date.strftime('%d.%m.%Y %H:%M')}\n"
+                            f"**⏳ Осталось:** {days} дней, {hours} часов, {minutes} минут\n"
+                            f"**🔄 Автоповтор:** Каждый год"
+                        ),
+                        color=discord.Color.gold()
+                    )
+
+                    view = discord.ui.View()
+                    view.add_item(discord.ui.Button(
+                        style=discord.ButtonStyle.primary,
+                        label="🔄 Обновить таймер",
+                        custom_id=f"update_timer_{event_id}"
+                    ))
+                    view.add_item(discord.ui.Button(
+                        style=discord.ButtonStyle.secondary,
+                        label="📋 Показать список",
+                        custom_id=f"show_list_{event_id}"
+                    ))
+
+                    await message.edit(embed=embed, view=view)
+
+                    await interaction.followup.send(
+                        f"✅ Таймер обновлен!\n"
+                        f"Событие: {event['event_name']}\n"
+                        f"Следующее выполнение: {event_date.strftime('%d.%m.%Y %H:%M')}",
+                        ephemeral=True
+                    )
+                except Exception as e:
+                    await interaction.followup.send(
+                        f"⚠️ Ошибка обновления: {str(e)}",
+                        ephemeral=True
+                    )
+            else:
+                await interaction.followup.send(
+                    "❌ Канал событий не найден",
+                    ephemeral=True
+                )
+
+        except Exception as e:
+            await interaction.followup.send(
+                f"⚠️ Ошибка: {str(e)}",
                 ephemeral=True
             )
-
-        event_date = event['event_date']
-        time_left = event_date - datetime.now()
-        days = time_left.days
-        hours, remainder = divmod(time_left.seconds, 3600)
-        minutes, _ = divmod(remainder, 60)
-
-        await interaction.followup.send(
-            f"Таймер обновлен!\n"
-            f"Событие: {event['event_name']}\n"
-            f"Осталось: {days} дней, {hours} часов, {minutes} минут",
-            ephemeral=True
-        )
+        finally:
+            if connection.is_connected():
+                connection.close()
 
     async def list_events(self, interaction: discord.Interaction):
         """Показывает список всех событий с датой и временем"""

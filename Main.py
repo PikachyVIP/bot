@@ -105,6 +105,7 @@ def init_db():
                     recipients JSON,
                     channel_id BIGINT,
                     category_id BIGINT,
+                    loop_interval VARCHAR(20),
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
@@ -116,6 +117,19 @@ def init_db():
                     category_id BIGINT NOT NULL
                 )
             """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS event_notifications (
+                    event_id INT PRIMARY KEY,
+                    notified BOOLEAN DEFAULT 0,
+                    FOREIGN KEY (event_id) REFERENCES events(event_id)
+                )
+            """)
+
+            cursor.execute("""
+                ALTER TABLE events ADD COLUMN loop_interval VARCHAR(20) DEFAULT NULL;
+            """)
+
             conn.commit()
         except Error as e:
             print(f"Ошибка MySQL: {e}")
