@@ -187,58 +187,82 @@ class EventCommands(commands.Cog):
         """Отправляет уведомление о наступлении события"""
         connection = self.get_db_connection()
         if not connection:
+            print("Не удалось подключиться к БД")
             return
 
         try:
             cursor = connection.cursor(dictionary=True)
 
-            # Получаем лог-канал через channel_id из события
+            # Упрощенный запрос для получения log_channel_id
             cursor.execute("""
                 SELECT log_channel_id FROM event_config 
-                WHERE guild_id = (
+                WHERE guild_id IN (
                     SELECT guild_id FROM event_config 
                     WHERE channel_id = %s
+                    LIMIT 1
                 )
+                LIMIT 1
             """, (event['channel_id'],))
+
             config = cursor.fetchone()
+            print(f"Результат запроса log_channel: {config}")  # Для отладки
 
-            if config and config['log_channel_id']:
-                log_channel = self.bot.get_channel(config['log_channel_id'])
-                if log_channel:
-                    recipients = json.loads(event['recipients'])
-                    mentions = []
-                    for r in recipients:
-                        if r == "all":
-                            mentions.append("@everyone")
-                        elif r.startswith("role:"):
-                            role_id = int(r.split(":")[1])
-                            role = log_channel.guild.get_role(role_id)
-                            if role:
-                                mentions.append(role.mention)
-                        elif r.startswith("user:"):
-                            user_id = int(r.split(":")[1])
-                            user = log_channel.guild.get_member(user_id)
-                            if user:
-                                mentions.append(user.mention)
+            if not config or not config.get('log_channel_id'):
+                print("Лог-канал не найден в конфиге")
+                return
 
-                    loop_text = LoopInterval[event['loop_interval']].value if event['loop_interval'] else "без повтора"
+            log_channel = self.bot.get_channel(config['log_channel_id'])
+            if not log_channel:
+                print(f"Не удалось найти канал с ID {config['log_channel_id']}")
+                return
 
-                    embed = discord.Embed(
-                        title="🔔 Событие началось!",
-                        description=(
-                            f"**Название:** {event['event_name']}\n"
-                            f"**Тип:** {loop_text}\n"
-                            f"**Для:** {' '.join(mentions) if mentions else 'всех участников'}"
-                        ),
-                        color=discord.Color.green()
-                    )
+            # Обработка получателей
+            recipients = json.loads(event['recipients'])
+            mentions = []
+            for r in recipients:
+                if r == "all":
+                    mentions.append("@everyone")
+                elif r.startswith("role:"):
+                    role_id = int(r.split(":")[1])
+                    role = log_channel.guild.get_role(role_id)
+                    if role:
+                        mentions.append(role.mention)
+                    else:
+                        print(f"Роль {role_id} не найдена")
+                elif r.startswith("user:"):
+                    user_id = int(r.split(":")[1])
+                    user = log_channel.guild.get_member(user_id)
+                    if user:
+                        mentions.append(user.mention)
+                    else:
+                        print(f"Пользователь {user_id} не найден")
 
-                    await log_channel.send(
-                        content=' '.join(mentions) if mentions else None,
-                        embed=embed
-                    )
+            loop_text = LoopInterval[event['loop_interval']].value if event['loop_interval'] else "без повтора"
+
+            embed = discord.Embed(
+                title="🔔 Событие началось!",
+                description=(
+                    f"**Название:** {event['event_name']}\n"
+                    f"**Тип:** {loop_text}\n"
+                    f"**Для:** {' '.join(mentions) if mentions else 'всех участников'}"
+                ),
+                color=discord.Color.green()
+            )
+
+            # Отправка сообщения с проверкой прав
+            try:
+                await log_channel.send(
+                    content=' '.join(mentions) if mentions else None,
+                    embed=embed
+                )
+                print("Уведомление успешно отправлено")
+            except discord.Forbidden:
+                print("Нет прав для отправки сообщений в канал")
+            except discord.HTTPException as e:
+                print(f"Ошибка при отправке: {e}")
+
         except Exception as e:
-            print(f"Ошибка отправки уведомления: {e}")
+            print(f"Критическая ошибка в send_notification: {str(e)}")
         finally:
             if connection.is_connected():
                 connection.close()
