@@ -2434,6 +2434,7 @@ class URLControls(discord.ui.View):
         self.is_paused = False
         self.pause_time = 0
         self.pause_duration = 0
+        self._deleted = False
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return True
@@ -2460,7 +2461,7 @@ class URLControls(discord.ui.View):
 
     async def update_controls(self, current_time_str=None):
         try:
-            if not self.message:
+            if self._deleted or not self.message:
                 return
 
             if not current_time_str:
@@ -2491,14 +2492,16 @@ class URLControls(discord.ui.View):
             # Пытаемся обновить сообщение, при ошибке - создаем новое
             try:
                 await self.message.edit(embed=embed, view=self)
-            except discord.NotFound:
-                # Если сообщение было удалено, создаем новое
-                self.message = await self.message.channel.send(embed=embed, view=self)
             except discord.HTTPException as e:
                 if e.code == 50027:  # Invalid Webhook Token
+                    try:
+                        await self.message.delete()
+                    except:
+                        pass
                     self.message = await self.message.channel.send(embed=embed, view=self)
                 else:
                     raise
+
         except Exception as e:
             print(f"Update error: {e}")
 
@@ -2526,21 +2529,24 @@ class URLControls(discord.ui.View):
     @discord.ui.button(label="⏹", style=discord.ButtonStyle.red)
     async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
-            async with self.lock:
-                if self.update_task:
-                    self.update_task.cancel()
-                if self.voice_client.is_connected():
-                    await self.voice_client.disconnect()
-                self.stop()
-                await interaction.response.defer()
-                if self.message:
-                    try:
-                        await self.message.edit(view=None)
-                    except:
-                        pass
+            if self._deleted:
+                return
+
+            self._deleted = True
+            if self.voice_client.is_connected():
+                await self.voice_client.disconnect()
+
+            if self.message:
+                try:
+                    await self.message.delete()
+                except:
+                    pass
+
+            await interaction.response.defer()
         except Exception as e:
             print(f"Stop error: {e}")
             await interaction.response.defer()
+
     @discord.ui.button(label="🔉", style=discord.ButtonStyle.grey)
     async def volume_down(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
@@ -2574,12 +2580,12 @@ class URLControls(discord.ui.View):
 
 
     async def on_timeout(self):
-        try:
-            if self.update_task:
-                self.update_task.cancel()
-            await self.message.edit(view=None)
-        except:
-            pass
+        if not self._deleted and self.message:
+            try:
+                await self.message.delete()
+            except:
+                pass
+            self._deleted = True
 
 # Функция для обработки URL-воспроизведения
 async def handle_url_playback(interaction, url, channel, volume):
@@ -2644,9 +2650,13 @@ async def handle_url_playback(interaction, url, channel, volume):
         audio_source.volume = final_volume
 
         def after_playing(error):
-            if error:
-                print(f"Playback error: {error}")
-            asyncio.run_coroutine_threadsafe(controls.on_timeout(), bot.loop)
+            coro = None
+            if controls.message and not controls._deleted:
+                try:
+                    coro = controls.message.delete()
+                except:
+                    pass
+            asyncio.run_coroutine_threadsafe(coro or asyncio.sleep(0), bot.loop)
 
         voice_client.play(audio_source, after=after_playing)
 
