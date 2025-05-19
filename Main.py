@@ -16,6 +16,8 @@ from os import environ
 import yt_dlp
 from discord import FFmpegPCMAudio
 from data import token, assettoken, mysqlconf
+
+from Calendar import setup_event_commands
 from install_multivoice import setup
 import ffmpeg
 
@@ -92,6 +94,26 @@ def init_db():
             #         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
             #     )
             # """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS events (
+                    event_id INT AUTO_INCREMENT PRIMARY KEY,
+                    event_name VARCHAR(255) NOT NULL UNIQUE,
+                    description TEXT,
+                    event_date DATETIME NOT NULL,
+                    recipients JSON,
+                    channel_id BIGINT,
+                    category_id BIGINT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS event_config (
+                    guild_id BIGINT PRIMARY KEY,
+                    channel_id BIGINT NOT NULL,
+                    category_id BIGINT NOT NULL
+                )
+            """)
             conn.commit()
         except Error as e:
             print(f"Ошибка MySQL: {e}")
@@ -417,6 +439,7 @@ async def on_ready():
     print(f'Бот {bot.user} запущен и готов к работе!')
     # Регистрируем персистентное View
     await setup(bot)
+    await setup_event_commands(bot)
     bot.add_view(ThreadControlView())
     try:
         # Синхронизируем команды с Discord
@@ -2461,7 +2484,7 @@ class URLControls(discord.ui.View):
 
     async def update_controls(self, current_time_str=None):
         try:
-            if self._deleted or not self.message:
+            if not self.message:
                 return
 
             if not current_time_str:
@@ -2489,19 +2512,23 @@ class URLControls(discord.ui.View):
                 inline=True
             )
 
-            # Пытаемся обновить сообщение, при ошибке - создаем новое
             try:
                 await self.message.edit(embed=embed, view=self)
             except discord.HTTPException as e:
                 if e.code == 50027:  # Invalid Webhook Token
                     try:
-                        await self.message.delete()
+                        # 1. Удаляем старое сообщение
+                        old_msg = self.message
+                        await old_msg.delete()
                     except:
                         pass
-                    self.message = await self.message.channel.send(embed=embed, view=self)
-                else:
-                    raise
 
+                    # 2. Создаем новое сообщение
+                    try:
+                        self.message = await old_msg.channel.send(embed=embed, view=self)
+                    except:
+                        # Если не удалось создать новое, просто игнорируем
+                        pass
         except Exception as e:
             print(f"Update error: {e}")
 
@@ -2650,15 +2677,15 @@ async def handle_url_playback(interaction, url, channel, volume):
         audio_source.volume = final_volume
 
         def after_playing(error):
-            coro = None
-            if controls.message and not controls._deleted:
+            async def cleanup():
                 try:
-                    coro = controls.message.delete()
+                    if controls.message and not controls._deleted:
+                        await controls.message.delete()
+                        controls._deleted = True
                 except:
                     pass
-            asyncio.run_coroutine_threadsafe(coro or asyncio.sleep(0), bot.loop)
 
-        voice_client.play(audio_source, after=after_playing)
+            asyncio.run_coroutine_threadsafe(cleanup(), bot.loop)
 
     except Exception as e:
         await interaction.followup.send(f"❌ Ошибка: {str(e)}")

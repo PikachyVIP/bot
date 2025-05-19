@@ -6,6 +6,7 @@ from datetime import datetime
 from mysql.connector import Error
 from data import mysqlconf
 
+import Main
 
 MYSQL_CONFIG = mysqlconf
 
@@ -85,6 +86,13 @@ async def setup(bot: commands.Bot):
 
     @bot.tree.command(name="install_multivoice", description="Установка системы временных голосовых каналов")
     async def install_multivoice(interaction: discord.Interaction):
+
+        if not await Main.check_command_access_app(interaction):
+            return await interaction.response.send_message(
+                "❌ Недостаточно прав",
+                ephemeral=True
+            )
+
         try:
             # Создаем категорию
             category = await interaction.guild.create_category(
