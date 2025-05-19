@@ -109,16 +109,14 @@ def init_db():
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-    
-            cursor.execute("""
-                 CREATE TABLE IF NOT EXISTS event_config (
-                    guild_id BIGINT PRIMARY KEY,
-                    main_channel_id BIGINT NOT NULL, 
-                    log_channel_id BIGINT NOT NULL,     
-                    category_id BIGINT NOT NULL          
-                 )
-            """)
 
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS event_config (
+                    guild_id BIGINT PRIMARY KEY,
+                    channel_id BIGINT NOT NULL,
+                    category_id BIGINT NOT NULL
+                )
+            """)
 
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS event_notifications (
