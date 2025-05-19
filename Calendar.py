@@ -49,6 +49,7 @@ class EventCommands(commands.Cog):
         action="Выберите действие",
         name="Название события",
         date="Дата события в формате DD:MM:YYYY",
+        time="Время события в формате HH:MM",
         recipients="Укажите пользователей, роли или all для всех"
     )
     @app_commands.choices(action=[
@@ -125,22 +126,26 @@ class EventCommands(commands.Cog):
                 ephemeral=True
             )
 
-    async def create_event(self, interaction: discord.Interaction, name: str, date: str, recipients: str):
-        """Создает новое событие"""
+    async def create_event(self, interaction: discord.Interaction, name: str, date: str, time: str, recipients: str):
+        """Создает новое событие с указанием времени"""
         try:
-            event_date = datetime.strptime(date, "%d:%m:%Y")
-            if event_date < datetime.now():
+            # Парсим дату и время
+            event_datetime = datetime.strptime(f"{date} {time}", "%d:%m:%Y %H:%M")
+
+            if event_datetime < datetime.now():
                 return await interaction.response.send_message(
-                    "Дата события не может быть в прошлом",
+                    "Дата и время события не могут быть в прошлом",
                     ephemeral=True
                 )
         except ValueError:
             return await interaction.response.send_message(
-                "Неверный формат даты. Используйте DD:MM:YYYY",
+                "Неверный формат даты/времени. Используйте:\n"
+                "Дата: DD:MM:YYYY (например 25:12:2024)\n"
+                "Время: HH:MM (например 15:30)",
                 ephemeral=True
             )
 
-        # Получаем ID канала событий из БД
+        # Получаем ID канала событий из event_config
         connection = self.get_db_connection()
         if not connection:
             return await interaction.response.send_message(
@@ -149,54 +154,46 @@ class EventCommands(commands.Cog):
             )
 
         cursor = connection.cursor(dictionary=True)
-        cursor.execute(
-            "SELECT channel_id FROM event_config WHERE guild_id = %s",
-            (interaction.guild.id,)
-        )
-        config = cursor.fetchone()
 
-        if not config:
-            connection.close()
-            return await interaction.response.send_message(
-                "Сначала выполните /event install",
-                ephemeral=True
-            )
-
-        channel_id = config['channel_id']
-        event_channel = self.bot.get_channel(channel_id)
-
-        if not event_channel:
-            connection.close()
-            return await interaction.response.send_message(
-                "Канал событий не найден",
-                ephemeral=True
-            )
-
-        # Обрабатываем получателей
-        recipient_data = []
-        if recipients.lower() == "all":
-            recipient_data = ["all"]
-        else:
-            for mention in recipients.split():
-                if mention.startswith(('<@&', '<@')):
-                    try:
-                        entity_id = int(mention.strip('<@&>'))
-                        if mention.startswith('<@&'):
-                            recipient_data.append(f"role:{entity_id}")
-                        else:
-                            recipient_data.append(f"user:{entity_id}")
-                    except ValueError:
-                        continue
-
-        if not recipient_data:
-            connection.close()
-            return await interaction.response.send_message(
-                "Не указаны получатели или указаны некорректно",
-                ephemeral=True
-            )
-
-        # Сохраняем событие в БД
         try:
+            # Получаем конфигурацию сервера
+            cursor.execute(
+                "SELECT channel_id FROM event_config WHERE guild_id = %s",
+                (interaction.guild.id,)
+            )
+            config = cursor.fetchone()
+
+            if not config:
+                return await interaction.response.send_message(
+                    "Сначала выполните /event install",
+                    ephemeral=True
+                )
+
+            channel_id = config['channel_id']
+
+            # Обрабатываем получателей
+            recipient_data = []
+            if recipients.lower() == "all":
+                recipient_data = ["all"]
+            else:
+                for mention in recipients.split():
+                    if mention.startswith(('<@&', '<@')):
+                        try:
+                            entity_id = int(mention.strip('<@&>'))
+                            if mention.startswith('<@&'):
+                                recipient_data.append(f"role:{entity_id}")
+                            else:
+                                recipient_data.append(f"user:{entity_id}")
+                        except ValueError:
+                            continue
+
+            if not recipient_data:
+                return await interaction.response.send_message(
+                    "Не указаны получатели или указаны некорректно",
+                    ephemeral=True
+                )
+
+            # Сохраняем событие в БД
             cursor.execute("""
                 INSERT INTO events (
                     event_name,
@@ -206,59 +203,60 @@ class EventCommands(commands.Cog):
                 ) VALUES (%s, %s, %s, %s)
             """, (
                 name,
-                event_date,
+                event_datetime,
                 json.dumps(recipient_data),
                 channel_id
             ))
             connection.commit()
             event_id = cursor.lastrowid
+
+            # Создаем сообщение с таймером
+            time_left = event_datetime - datetime.now()
+            days = time_left.days
+            hours, remainder = divmod(time_left.seconds, 3600)
+            minutes, _ = divmod(remainder, 60)
+
+            embed = discord.Embed(
+                title=f"Событие: {name}",
+                description=f"Дата: {event_datetime.strftime('%d.%m.%Y %H:%M')}\n"
+                            f"Осталось: {days} дней, {hours} часов, {minutes} минут",
+                color=discord.Color.blue()
+            )
+
+            view = discord.ui.View()
+            view.add_item(discord.ui.Button(
+                style=discord.ButtonStyle.primary,
+                label="Обновить таймер",
+                custom_id=f"update_timer_{event_id}"
+            ))
+            view.add_item(discord.ui.Button(
+                style=discord.ButtonStyle.secondary,
+                label="Показать список",
+                custom_id=f"show_list_{event_id}"
+            ))
+
+            event_channel = self.bot.get_channel(channel_id)
+            if event_channel:
+                message = await event_channel.send(embed=embed, view=view)
+                self.active_messages[event_id] = message.id
+                await interaction.response.send_message(
+                    f"Событие '{name}' успешно создано на {event_datetime.strftime('%d.%m.%Y %H:%M')}!",
+                    ephemeral=True
+                )
+            else:
+                await interaction.response.send_message(
+                    "Канал событий не найден",
+                    ephemeral=True
+                )
+
         except mysql.connector.Error as e:
-            connection.close()
-            return await interaction.response.send_message(
+            await interaction.response.send_message(
                 f"Ошибка при создании события: {str(e)}",
                 ephemeral=True
             )
-
-        # Создаем сообщение с таймером
-        time_left = event_date - datetime.now()
-        days = time_left.days
-        hours, remainder = divmod(time_left.seconds, 3600)
-        minutes, _ = divmod(remainder, 60)
-
-        embed = discord.Embed(
-            title=f"Событие: {name}",
-            description=f"Дата: {event_date.strftime('%d.%m.%Y')}\n"
-                        f"Осталось: {days} дней, {hours} часов, {minutes} минут",
-            color=discord.Color.blue()
-        )
-
-        view = discord.ui.View()
-        view.add_item(discord.ui.Button(
-            style=discord.ButtonStyle.primary,
-            label="Обновить таймер",
-            custom_id=f"update_timer_{event_id}"
-        ))
-        view.add_item(discord.ui.Button(
-            style=discord.ButtonStyle.secondary,
-            label="Показать список",
-            custom_id=f"show_list_{event_id}"
-        ))
-
-        try:
-            message = await event_channel.send(embed=embed, view=view)
-            self.active_messages[event_id] = message.id
-        except discord.errors.Forbidden:
-            connection.close()
-            return await interaction.response.send_message(
-                "Нет прав для отправки сообщений в канал событий",
-                ephemeral=True
-            )
-
-        connection.close()
-        await interaction.response.send_message(
-            f"Событие '{name}' успешно создано!",
-            ephemeral=True
-        )
+        finally:
+            if connection.is_connected():
+                connection.close()
 
     async def list_events(self, interaction: discord.Interaction):
         """Показывает список всех событий"""
@@ -573,13 +571,11 @@ class EventCommands(commands.Cog):
             ephemeral=True
         )
 
-    async def show_event_list(self, interaction: discord.Interaction, event_id: int):
-        """Показывает список событий на 15 секунд"""
-        await interaction.response.defer(ephemeral=True)
-
+    async def list_events(self, interaction: discord.Interaction):
+        """Показывает список всех событий с датой и временем"""
         connection = self.get_db_connection()
         if not connection:
-            return await interaction.followup.send(
+            return await interaction.response.send_message(
                 "Ошибка подключения к БД",
                 ephemeral=True
             )
@@ -594,14 +590,15 @@ class EventCommands(commands.Cog):
         connection.close()
 
         if not events:
-            return await interaction.followup.send(
+            return await interaction.response.send_message(
                 "Нет активных событий",
                 ephemeral=True
             )
 
         embed = discord.Embed(
-            title="Список событий",
-            color=discord.Color.green()
+            title="📅 Список событий",
+            color=discord.Color.green(),
+            timestamp=datetime.now()
         )
 
         for event in events:
@@ -611,24 +608,35 @@ class EventCommands(commands.Cog):
             hours, remainder = divmod(time_left.seconds, 3600)
             minutes, _ = divmod(remainder, 60)
 
+            # Обработка получателей
+            recipients = json.loads(event['recipients'])
+            recipient_text = []
+            for r in recipients:
+                if r == "all":
+                    recipient_text.append("Все участники")
+                elif r.startswith("role:"):
+                    role_id = int(r.split(":")[1])
+                    role = interaction.guild.get_role(role_id)
+                    recipient_text.append(f"Роль: {role.mention if role else 'Не найдена'}")
+                elif r.startswith("user:"):
+                    user_id = int(r.split(":")[1])
+                    user = interaction.guild.get_member(user_id)
+                    recipient_text.append(f"Пользователь: {user.mention if user else 'Не найден'}")
+
+            # Добавление поля с информацией о событии
             embed.add_field(
-                name=event['event_name'],
-                value=f"Дата: {event_date.strftime('%d.%m.%Y')}\n"
-                      f"Осталось: {days}д {hours}ч {minutes}м",
+                name=f"🔹 {event['event_name']}",
+                value=(
+                    f"**🗓️ Дата:** {event_date.strftime('%d.%m.%Y %H:%M')}\n"
+                    f"**⏳ Осталось:** {days}д {hours}ч {minutes}м\n"
+                    f"**👥 Для:** {', '.join(recipient_text)}\n"
+                    f"**🆔 ID:** {event['event_id']}"
+                ),
                 inline=False
             )
 
-        message = await interaction.followup.send(
-            embed=embed,
-            ephemeral=True
-        )
-
-        # Удаляем сообщение через 15 секунд
-        await asyncio.sleep(15)
-        try:
-            await message.delete()
-        except:
-            pass
+        embed.set_footer(text=f"Всего событий: {len(events)}")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 async def setup(bot):
