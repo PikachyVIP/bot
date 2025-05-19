@@ -65,15 +65,26 @@ class EventCommands(commands.Cog):
             action: Literal["install", "create", "list", "remove"],
             name: Optional[str] = None,
             date: Optional[str] = None,
+            time: Optional[str] = None,
             recipients: Optional[str] = None
     ):
         if action == "install":
             await self.install_event_system(interaction)
         elif action == "create":
-            await self.create_event(interaction, name, date, recipients)
+            if not all([name, date, time, recipients]):
+                return await interaction.response.send_message(
+                    "Для создания события нужно указать: название, дату, время и получателей",
+                    ephemeral=True
+                )
+            await self.create_event(interaction, name, date, time, recipients)
         elif action == "list":
             await self.list_events(interaction)
         elif action == "remove":
+            if not name:
+                return await interaction.response.send_message(
+                    "Укажите название события для удаления",
+                    ephemeral=True
+                )
             await self.remove_event(interaction, name)
 
     async def install_event_system(self, interaction: discord.Interaction):
