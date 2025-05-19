@@ -21,7 +21,7 @@ class VoiceSystem:
         except Error as e:
             print(f"MySQL Error: {e}")
             return None
-    
+
 
 
     async def get_voice_settings(self, guild_id):

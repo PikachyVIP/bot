@@ -17,7 +17,9 @@ import yt_dlp
 from discord import FFmpegPCMAudio
 from data import token, assettoken, mysqlconf
 
-from Calendar import setup_event_commands
+import Calendar
+import install_multivoice
+from Calendar import setup
 from install_multivoice import setup
 import ffmpeg
 
@@ -439,8 +441,8 @@ async def on_ready():
 
     print(f'Бот {bot.user} запущен и готов к работе!')
     # Регистрируем персистентное View
-    await setup(bot)
-    await setup_event_commands(bot)
+    await install_multivoice.setup(bot)
+    await Calendar.setup(bot)
     bot.add_view(ThreadControlView())
     try:
         # Синхронизируем команды с Discord
