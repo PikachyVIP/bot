@@ -170,6 +170,7 @@ class EventCommands(commands.Cog):
         if not connection:
             return
 
+
         try:
             cursor = connection.cursor(dictionary=True)
 

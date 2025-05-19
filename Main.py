@@ -119,6 +119,7 @@ def init_db():
                  )
             """)
 
+
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS event_notifications (
                     event_id INT PRIMARY KEY,
