@@ -109,7 +109,7 @@ def init_db():
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-
+    
             cursor.execute("""
                  CREATE TABLE IF NOT EXISTS event_config (
                     guild_id BIGINT PRIMARY KEY,

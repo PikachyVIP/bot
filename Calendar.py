@@ -165,7 +165,7 @@ class EventCommands(commands.Cog):
             )
 
     async def send_notification(self, event):
-        """Отправляет уведомление о наступлении события"""
+        """Отправляет уведомление о наступлении события в лог-канал"""
         connection = self.get_db_connection()
         if not connection:
             return
@@ -173,16 +173,20 @@ class EventCommands(commands.Cog):
         try:
             cursor = connection.cursor(dictionary=True)
 
-            # Получаем канал для логов
+            # Получаем лог-канал из конфига (используем main_channel_id для поиска гильдии)
             cursor.execute("""
-                    SELECT log_channel_id FROM event_config 
-                    WHERE guild_id = (SELECT guild_id FROM channels WHERE channel_id = %s)
-                """, (event['channel_id'],))
+                SELECT log_channel_id FROM event_config 
+                WHERE guild_id = (
+                    SELECT guild_id FROM events 
+                    WHERE event_id = %s
+                )
+            """, (event['event_id'],))
             config = cursor.fetchone()
 
-            if config:
+            if config and config['log_channel_id']:
                 log_channel = self.bot.get_channel(config['log_channel_id'])
                 if log_channel:
+                    # Обрабатываем получателей
                     recipients = json.loads(event['recipients'])
                     mentions = []
                     for r in recipients:
@@ -190,19 +194,43 @@ class EventCommands(commands.Cog):
                             mentions.append("@everyone")
                         elif r.startswith("role:"):
                             role_id = int(r.split(":")[1])
-                            mentions.append(f"<@&{role_id}>")
+                            role = log_channel.guild.get_role(role_id)
+                            if role:
+                                mentions.append(role.mention)
                         elif r.startswith("user:"):
                             user_id = int(r.split(":")[1])
-                            mentions.append(f"<@{user_id}>")
+                            user = log_channel.guild.get_member(user_id)
+                            if user:
+                                mentions.append(user.mention)
 
                     loop_text = LoopInterval[event['loop_interval']].value if event['loop_interval'] else "без повтора"
 
-                    await log_channel.send(
-                        f"**🔔 Событие наступило!**\n"
-                        f"**Название:** {event['event_name']}\n"
-                        f"**Повтор:** {loop_text}\n"
-                        f"**Для:** {' '.join(mentions)}"
+                    # Создаем красивое embed-сообщение
+                    embed = discord.Embed(
+                        title="🔔 Событие наступило!",
+                        description=(
+                            f"**Название:** {event['event_name']}\n"
+                            f"**Тип:** {loop_text}\n"
+                            f"**Дата:** {event['event_date'].strftime('%d.%m.%Y %H:%M')}"
+                        ),
+                        color=discord.Color.green()
                     )
+
+                    # Отправляем сообщение с упоминаниями и embed
+                    await log_channel.send(
+                        content=' '.join(mentions) if mentions else None,
+                        embed=embed
+                    )
+
+                    # Добавляем реакцию для визуального подтверждения
+                    try:
+                        message = await log_channel.fetch_message(log_channel.last_message_id)
+                        await message.add_reaction('✅')
+                    except:
+                        pass
+
+        except Exception as e:
+            print(f"Ошибка при отправке уведомления: {e}")
         finally:
             if connection.is_connected():
                 connection.close()
@@ -240,7 +268,7 @@ class EventCommands(commands.Cog):
 
             # Проверяем конфигурацию сервера
             cursor.execute(
-                "SELECT channel_id FROM event_config WHERE guild_id = %s",
+                "SELECT main_channel_id FROM event_config WHERE guild_id = %s",
                 (interaction.guild.id,)
             )
             config = cursor.fetchone()
@@ -279,14 +307,14 @@ class EventCommands(commands.Cog):
                     event_name,
                     event_date,
                     recipients,
-                    channel_id,
+                    channel_id,  # <-- ЭТО НУЖНО ЗАМЕНИТЬ НА main_channel_id
                     loop_interval
                 ) VALUES (%s, %s, %s, %s, %s)
             """, (
                 name,
                 event_datetime,
                 json.dumps(recipient_data),
-                config['channel_id'],
+                config['main_channel_id'],  # <-- Используем main_channel_id из конфига
                 loop
             ))
             connection.commit()
@@ -518,7 +546,8 @@ class EventCommands(commands.Cog):
 
         # Проверяем существование события
         cursor.execute(
-            "SELECT event_id FROM events WHERE event_name = %s",
+            "SELECT event_id, main_channel_id FROM events WHERE event_name = %s",
+            # Изменено channel_id -> main_channel_id
             (name,)
         )
         event = cursor.fetchone()
@@ -533,23 +562,16 @@ class EventCommands(commands.Cog):
         # Удаляем сообщение с таймером, если оно существует
         if event['event_id'] in self.active_messages:
             try:
-                channel_id = None
-                cursor.execute(
-                    "SELECT channel_id FROM events WHERE event_id = %s",
-                    (event['event_id'],)
-                )
-                event_data = cursor.fetchone()
-                if event_data:
-                    channel_id = event_data['channel_id']
-                    channel = self.bot.get_channel(channel_id)
-                    if channel:
-                        try:
-                            message = await channel.fetch_message(
-                                self.active_messages[event['event_id']]
-                            )
-                            await message.delete()
-                        except:
-                            pass
+                # Используем main_channel_id из результата запроса
+                channel = self.bot.get_channel(event['main_channel_id'])  # Изменено channel_id -> main_channel_id
+                if channel:
+                    try:
+                        message = await channel.fetch_message(
+                            self.active_messages[event['event_id']]
+                        )
+                        await message.delete()
+                    except:
+                        pass
             except:
                 pass
             finally:
@@ -566,12 +588,12 @@ class EventCommands(commands.Cog):
 
         if affected:
             await interaction.response.send_message(
-                f"Событие '{name}' успешно удалено!",
+                f"✅ Событие '{name}' успешно удалено!",
                 ephemeral=True
             )
         else:
             await interaction.response.send_message(
-                f"Не удалось удалить событие '{name}'",
+                f"❌ Не удалось удалить событие '{name}'",
                 ephemeral=True
             )
 
