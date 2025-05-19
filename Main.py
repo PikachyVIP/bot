@@ -227,6 +227,7 @@ async def check_command_access_app(interaction: discord.Interaction) -> bool:
         conn.close()
 
 
+
 # Добавляем проверку прав ко всем командам (кроме help и law)
 for command in bot.commands:
     if command.name not in ['help', 'law']:
