@@ -458,8 +458,8 @@ async def on_ready():
 
     print(f'Бот {bot.user} запущен и готов к работе!')
     # Регистрируем персистентное View
-    await install_multivoice.setup(bot)
-    await Calendar.setup(bot)
+    #await install_multivoice.setup(bot)
+    #await Calendar.setup(bot)
     bot.add_view(ThreadControlView())
     try:
         # Синхронизируем команды с Discord
