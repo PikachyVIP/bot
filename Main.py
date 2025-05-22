@@ -1,4 +1,5 @@
 import io
+import subprocess
 from typing import Optional, Final
 import discord
 from discord.ext import commands
@@ -21,7 +22,11 @@ import Calendar
 import install_multivoice
 from Calendar import setup
 from install_multivoice import setup
-import ffmpeg
+
+FFMPEG_OPTIONS = {
+    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin',
+    'options': '-vn -loglevel error -timeout 30000000'  # 30 секунд таймаут
+}
 
 
 
@@ -2315,12 +2320,12 @@ async def handle_volume(interaction, volume, guild_id, vc):
 async def play_next(interaction, guild_id, volume=30):
     vc = interaction.guild.voice_client
 
-    # Проверяем, есть ли что воспроизводить
     if not (guild_id in music_queues and music_queues[guild_id]):
+        if vc and vc.is_connected():
+            await vc.disconnect()
         return
 
     try:
-        # Удаляем старое сообщение о текущем треке
         if guild_id in now_playing_messages:
             try:
                 await now_playing_messages[guild_id].delete()
@@ -2329,58 +2334,51 @@ async def play_next(interaction, guild_id, volume=30):
 
         current_volume = (volume / 100) * VOLUME_REDUCTION if volume is not None else (VOLUME_REDUCTION if guild_id not in current_tracks else current_tracks[guild_id]['volume'])
 
-        # Обработка зацикливания
         if guild_id in loop_states and loop_states[guild_id] and guild_id in current_tracks:
-            # Если луп включен - используем текущий трек
             track = current_tracks[guild_id]
         else:
-            # Берем следующий трек из очереди
             track = music_queues[guild_id].pop(0)
 
-        # Устанавливаем сохранённую громкость
         track['volume'] = current_volume
         current_tracks[guild_id] = track
 
-        # Обновляем информацию о прогрессе
         track_progress[guild_id] = {
             'start_time': asyncio.get_event_loop().time(),
             'duration': track['duration'],
             'last_update': 0
         }
 
-        # Настройки FFmpeg
-        ffmpeg_options = {
-            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-            'options': '-vn'
-        }
-
-        # Создаем аудио источник
-        source = discord.FFmpegPCMAudio(track['url'], **ffmpeg_options)
+        source = discord.FFmpegPCMAudio(
+            track['url'],
+            **FFMPEG_OPTIONS,
+            stderr=subprocess.PIPE
+        )
         source = discord.PCMVolumeTransformer(source, volume=track['volume'])
 
-        # Функция, вызываемая после окончания воспроизведения
         def after_playing(error):
             if error:
-                print(f"Ошибка воспроизведения: {error}")
+                print(f"Playback error: {error}")
 
-            # Если луп включен - возвращаем трек в очередь
+            coro = vc.disconnect()
+            fut = asyncio.run_coroutine_threadsafe(coro, bot.loop)
+            try:
+                fut.result(timeout=5)
+            except:
+                pass
+
             if guild_id in loop_states and loop_states[guild_id] and guild_id in current_tracks:
                 music_queues[guild_id].insert(0, current_tracks[guild_id])
 
-            # Запускаем следующий трек
             asyncio.run_coroutine_threadsafe(
                 play_next(interaction, guild_id),
                 bot.loop
             )
 
-        # Начинаем воспроизведение
         vc.play(source, after=after_playing)
 
-        # Формируем информацию о треке
         duration_str = str(timedelta(seconds=track['duration']))[2:7]
         loop_status = "✅" if loop_states.get(guild_id, False) else "❌"
 
-        # Создаем embed сообщение
         embed = create_embed(
             "🎶 Сейчас играет",
             f"**{track['title']}**\n"
@@ -2390,24 +2388,19 @@ async def play_next(interaction, guild_id, volume=30):
             Color.green()
         )
 
-        # Создаем view с кнопками управления
         view = MusicControlsView(guild_id)
-
-        # Отправляем новое сообщение
         now_playing_messages[guild_id] = await interaction.followup.send(
             embed=embed,
             view=view
         )
 
-        # Запускаем задачу обновления прогресса
         if guild_id not in update_progress_tasks or update_progress_tasks[guild_id].done():
             update_progress_tasks[guild_id] = asyncio.create_task(
                 update_progress(guild_id)
             )
 
     except Exception as e:
-        print(f"Ошибка в play_next: {e}")
-        # При ошибке пытаемся воспроизвести следующий трек
+        print(f"Error in play_next: {e}")
         if guild_id in music_queues and music_queues[guild_id]:
             await asyncio.sleep(1)
             await play_next(interaction, guild_id)
@@ -2463,178 +2456,137 @@ async def update_progress(guild_id):
 # Класс для управления воспроизведением URL
 class URLControls(discord.ui.View):
     def __init__(self, voice_client, initial_volume, title, duration, interaction):
-        super().__init__(timeout=None)
+        super().__init__(timeout=180)  # 3 минуты таймаут
         self.voice_client = voice_client
         self.volume = initial_volume
         self.title = title
         self.duration = duration
         self.duration_str = str(timedelta(seconds=duration)).split('.')[0] if duration else '0:00:00'
         self.message = None
-        self.lock = asyncio.Lock()
-        self.start_time = asyncio.get_event_loop().time()  # Исправлено здесь
+        self._deleted = False
         self.interaction = interaction
-        self.update_task = None
+        self.start_time = asyncio.get_event_loop().time()
         self.is_paused = False
         self.pause_time = 0
         self.pause_duration = 0
-        self._deleted = False
 
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        return True
-
-    async def start_updater(self):
-        self.update_task = asyncio.create_task(self.update_progress())
-
-    async def update_progress(self):
-        while True:
-            if not self.voice_client or not self.voice_client.is_connected():
-                break
-
-            if self.is_paused:
-                await asyncio.sleep(1)
-                continue
-
-            current_time = asyncio.get_event_loop().time() - self.start_time - self.pause_duration  # Исправлено здесь
-            if current_time > self.duration:
-                break
-
-            current_str = str(timedelta(seconds=int(current_time))).split('.')[0]
-            await self.update_controls(current_str)
-            await asyncio.sleep(3)
+    async def on_timeout(self):
+        if not self._deleted and self.voice_client and self.voice_client.is_connected():
+            await self.voice_client.disconnect()
+        self._deleted = True
 
     async def update_controls(self, current_time_str=None):
+        if self._deleted or not self.message:
+            return
+
+        if not current_time_str:
+            current_time = asyncio.get_event_loop().time() - self.start_time - self.pause_duration
+            current_time_str = str(timedelta(seconds=int(current_time))).split('.')[0]
+
+        embed = discord.Embed(
+            title="🎶 Воспроизведение URL",
+            description=f"**{self.title}**",
+            color=discord.Color.blue()
+        )
+        embed.add_field(
+            name="Прогресс",
+            value=f"{current_time_str} / {self.duration_str}",
+            inline=False
+        )
+        embed.add_field(
+            name="Громкость",
+            value=f"{self.volume}%",
+            inline=True
+        )
+        embed.add_field(
+            name="Состояние",
+            value="⏸ Пауза" if self.is_paused else "▶ Воспроизведение",
+            inline=True
+        )
+
         try:
-            if not self.message:
-                return
-
-            if not current_time_str:
-                current_time = asyncio.get_event_loop().time() - self.start_time - self.pause_duration
-                current_time_str = str(timedelta(seconds=int(current_time))).split('.')[0]
-
-            embed = discord.Embed(
-                title="🎶 Воспроизведение URL",
-                description=f"**{self.title}**",
-                color=discord.Color.blue()
-            )
-            embed.add_field(
-                name="Прогресс",
-                value=f"{current_time_str} / {self.duration_str}",
-                inline=False
-            )
-            embed.add_field(
-                name="Громкость",
-                value=f"{self.volume}%",
-                inline=True
-            )
-            embed.add_field(
-                name="Состояние",
-                value="⏸ Пауза" if self.is_paused else "▶ Воспроизведение",
-                inline=True
-            )
-
-            try:
-                await self.message.edit(embed=embed, view=self)
-            except discord.HTTPException as e:
-                if e.code == 50027:  # Invalid Webhook Token
-                    try:
-                        # 1. Удаляем старое сообщение
-                        old_msg = self.message
-                        await old_msg.delete()
-                    except:
-                        pass
-
-                    # 2. Создаем новое сообщение
-                    try:
-                        self.message = await old_msg.channel.send(embed=embed, view=self)
-                    except:
-                        # Если не удалось создать новое, просто игнорируем
-                        pass
+            await self.message.edit(embed=embed, view=self)
+        except discord.NotFound:
+            self._deleted = True
         except Exception as e:
-            print(f"Update error: {e}")
+            print(f"Update controls error: {e}")
 
     @discord.ui.button(label="⏯", style=discord.ButtonStyle.blurple)
     async def pause_resume(self, interaction: discord.Interaction, button: discord.ui.Button):
-        try:
-            async with self.lock:
-                if self.voice_client.is_playing():
-                    self.voice_client.pause()
-                    self.is_paused = True
-                    self.pause_time = asyncio.get_event_loop().time()
-                    button.label = "▶"
-                elif self.voice_client.is_paused():
-                    self.voice_client.resume()
-                    self.is_paused = False
-                    self.pause_duration += asyncio.get_event_loop().time() - self.pause_time
-                    button.label = "⏸"
+        if self._deleted or not self.voice_client:
+            return
 
-                await interaction.response.defer()
-                await self.update_controls()
+        try:
+            if self.voice_client.is_playing():
+                self.voice_client.pause()
+                self.is_paused = True
+                self.pause_time = asyncio.get_event_loop().time()
+                button.label = "▶"
+            elif self.voice_client.is_paused():
+                self.voice_client.resume()
+                self.is_paused = False
+                self.pause_duration += asyncio.get_event_loop().time() - self.pause_time
+                button.label = "⏸"
+
+            await interaction.response.defer()
+            await self.update_controls()
         except Exception as e:
             print(f"Pause error: {e}")
             await interaction.response.defer()
 
     @discord.ui.button(label="⏹", style=discord.ButtonStyle.red)
     async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
-        try:
-            if self._deleted:
-                return
+        if self._deleted:
+            return
 
-            self._deleted = True
-            if self.voice_client.is_connected():
-                await self.voice_client.disconnect()
+        self._deleted = True
+        if self.voice_client and self.voice_client.is_connected():
+            await self.voice_client.disconnect()
 
-            if self.message:
-                try:
-                    await self.message.delete()
-                except:
-                    pass
+        if self.message:
+            try:
+                await self.message.delete()
+            except:
+                pass
 
-            await interaction.response.defer()
-        except Exception as e:
-            print(f"Stop error: {e}")
-            await interaction.response.defer()
+        await interaction.response.defer()
 
     @discord.ui.button(label="🔉", style=discord.ButtonStyle.grey)
     async def volume_down(self, interaction: discord.Interaction, button: discord.ui.Button):
-        try:
-            async with self.lock:
-                self.volume = max(0, self.volume - 10)
-                new_volume = (self.volume / 100) * 0.5
-                if hasattr(self.voice_client.source, 'volume'):
-                    self.voice_client.source.volume = new_volume
+        if self._deleted or not self.voice_client:
+            return
 
-                await interaction.response.defer()
-                await self.update_controls()
+        try:
+            self.volume = max(0, self.volume - 10)
+            new_volume = (self.volume / 100) * 0.5
+            if hasattr(self.voice_client.source, 'volume'):
+                self.voice_client.source.volume = new_volume
+
+            await interaction.response.defer()
+            await self.update_controls()
         except Exception as e:
             print(f"Volume down error: {e}")
             await interaction.response.defer()
 
     @discord.ui.button(label="🔊", style=discord.ButtonStyle.grey)
     async def volume_up(self, interaction: discord.Interaction, button: discord.ui.Button):
-        try:
-            async with self.lock:
-                self.volume = min(100, self.volume + 10)
-                new_volume = (self.volume / 100) * 0.5
-                if hasattr(self.voice_client.source, 'volume'):
-                    self.voice_client.source.volume = new_volume
+        if self._deleted or not self.voice_client:
+            return
 
-                await interaction.response.defer()
-                await self.update_controls()
+        try:
+            self.volume = min(100, self.volume + 10)
+            new_volume = (self.volume / 100) * 0.5
+            if hasattr(self.voice_client.source, 'volume'):
+                self.voice_client.source.volume = new_volume
+
+            await interaction.response.defer()
+            await self.update_controls()
         except Exception as e:
             print(f"Volume up error: {e}")
             await interaction.response.defer()
 
 
-
-    async def on_timeout(self):
-        if not self._deleted and self.message:
-            try:
-                await self.message.delete()
-            except:
-                pass
-            self._deleted = True
-
-# Функция для обработки URL-воспроизведения
+# Замените функцию handle_url_playback на эту:
 async def handle_url_playback(interaction, url, channel, volume):
     vol = volume if volume else 50
     await interaction.response.defer()
@@ -2655,65 +2607,40 @@ async def handle_url_playback(interaction, url, channel, volume):
             duration = info.get('duration', 0)
 
         final_volume = (vol / 100) * 0.5
-        voice_client = await channel.connect()
+        voice_client = await channel.connect(timeout=10.0)
 
-        # Сначала создаем embed
-        embed = discord.Embed(
-            title="🎶 Воспроизведение URL",
-            description=f"**{title}**",
-            color=discord.Color.blue()
-        )
-        embed.add_field(
-            name="Прогресс",
-            value=f"0:00:00 / {str(timedelta(seconds=duration)).split('.')[0] if duration else '0:00:00'}",
-            inline=False
-        )
-        embed.add_field(
-            name="Громкость",
-            value=f"{vol}%",
-            inline=True
-        )
-        embed.add_field(
-            name="Состояние",
-            value="▶ Воспроизведение",
-            inline=True
-        )
-
-        # Создаем контролы
         controls = URLControls(voice_client, vol, title, duration, interaction)
 
-        # Отправляем сообщение с embed и контролами
-        message = await interaction.followup.send(embed=embed, view=controls)
-        controls.message = message  # Сохраняем ссылку на сообщение
-        await controls.start_updater()  # Запускаем обновление прогресса
-
         ffmpeg_options = {
-            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-            'options': f'-vn -filter:a volume={final_volume}'
+            **FFMPEG_OPTIONS,
+            'options': f"{FFMPEG_OPTIONS['options']} -filter:a volume={final_volume}"
         }
 
-        audio_source = FFmpegPCMAudio(audio_url, **ffmpeg_options)
+        audio_source = discord.FFmpegPCMAudio(
+            audio_url,
+            **ffmpeg_options,
+            stderr=subprocess.PIPE
+        )
         audio_source = discord.PCMVolumeTransformer(audio_source)
         audio_source.volume = final_volume
 
         def after_playing(error):
-            async def cleanup():
-                try:
-                    if controls.message and not controls._deleted:
-                        await controls.message.delete()
-                        controls._deleted = True
-                except:
-                    pass
+            if error:
+                print(f"URL playback error: {error}")
+            asyncio.run_coroutine_threadsafe(controls.on_timeout(), bot.loop)
 
-            asyncio.run_coroutine_threadsafe(cleanup(), bot.loop)
+        voice_client.play(audio_source, after=after_playing)
+
+        message = await interaction.followup.send(
+            embed=controls.create_embed(),
+            view=controls
+        )
+        controls.message = message
 
     except Exception as e:
-        await interaction.followup.send(f"❌ Ошибка: {str(e)}")
         if interaction.guild.voice_client:
-            try:
-                await interaction.guild.voice_client.disconnect()
-            except:
-                pass
+            await interaction.guild.voice_client.disconnect(force=True)
+        await interaction.followup.send(f"❌ Ошибка: {str(e)}")
 
 # Основная команда (упрощенная версия для URL)
 @bot.tree.command(name="audio", description="Управление аудио (VK, звуки, URL)")
