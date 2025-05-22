@@ -2475,13 +2475,10 @@ class URLControls(discord.ui.View):
             await self.voice_client.disconnect()
         self._deleted = True
 
-    async def update_controls(self, current_time_str=None):
-        if self._deleted or not self.message:
-            return
-
-        if not current_time_str:
-            current_time = asyncio.get_event_loop().time() - self.start_time - self.pause_duration
-            current_time_str = str(timedelta(seconds=int(current_time))).split('.')[0]
+    def create_embed(self):
+        """Создает embed для отображения информации о воспроизведении"""
+        current_time = asyncio.get_event_loop().time() - self.start_time - self.pause_duration
+        current_str = str(timedelta(seconds=int(current_time))).split('.')[0]
 
         embed = discord.Embed(
             title="🎶 Воспроизведение URL",
@@ -2490,7 +2487,7 @@ class URLControls(discord.ui.View):
         )
         embed.add_field(
             name="Прогресс",
-            value=f"{current_time_str} / {self.duration_str}",
+            value=f"{current_str} / {self.duration_str}",
             inline=False
         )
         embed.add_field(
@@ -2503,8 +2500,15 @@ class URLControls(discord.ui.View):
             value="⏸ Пауза" if self.is_paused else "▶ Воспроизведение",
             inline=True
         )
+        return embed
+
+    async def update_controls(self):
+        """Обновляет сообщение с текущим состоянием воспроизведения"""
+        if self._deleted or not self.message:
+            return
 
         try:
+            embed = self.create_embed()
             await self.message.edit(embed=embed, view=self)
         except discord.NotFound:
             self._deleted = True
