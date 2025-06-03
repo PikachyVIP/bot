@@ -2350,8 +2350,8 @@ async def play_next(interaction, guild_id, volume=30):
 
         source = discord.FFmpegPCMAudio(
             track['url'],
-            **FFMPEG_OPTIONS,
-            stderr=subprocess.PIPE
+            before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+            options='-vn'
         )
         source = discord.PCMVolumeTransformer(source, volume=track['volume'])
 
@@ -2622,8 +2622,8 @@ async def handle_url_playback(interaction, url, channel, volume):
 
         audio_source = discord.FFmpegPCMAudio(
             audio_url,
-            **ffmpeg_options,
-            stderr=subprocess.PIPE
+            before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+            options='-vn'
         )
         audio_source = discord.PCMVolumeTransformer(audio_source)
         audio_source.volume = final_volume
