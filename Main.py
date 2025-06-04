@@ -15,13 +15,15 @@ from discord import app_commands, Embed, Color
 import os
 from os import environ
 import yt_dlp
-from discord import FFmpegPCMAudio
 from data import token, assettoken, mysqlconf
 
 import Calendar
 import install_multivoice
 from Calendar import setup
 from install_multivoice import setup
+from discord.utils import setup_logging
+
+setup_logging()  # Включаем логирование
 
 FFMPEG_OPTIONS = {
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin',
@@ -2590,58 +2592,66 @@ class URLControls(discord.ui.View):
             await interaction.response.defer()
 
 
-# Замените функцию handle_url_playback на эту:
 async def handle_url_playback(interaction, url, channel, volume):
     vol = volume if volume else 50
     await interaction.response.defer()
 
     try:
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'noplaylist': True,
-            'extract_audio': True,
-            'skip_download': True,
-            'quiet': True,
-        }
-
+        # 1. Получаем информацию о треке
+        ydl_opts = {'quiet': True, 'extract_flat': True}
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             audio_url = info['url']
             title = info.get('title', 'Неизвестный трек')
             duration = info.get('duration', 0)
 
-        final_volume = (vol / 100) * 0.5
-        voice_client = await channel.connect(timeout=10.0)
+        # 2. Подключаемся к голосовому каналу с таймаутом
+        try:
+            vc = await channel.connect(timeout=10.0)
+        except asyncio.TimeoutError:
+            return await interaction.followup.send("❌ Таймаут подключения к голосовому каналу")
 
-        controls = URLControls(voice_client, vol, title, duration, interaction)
-
+        # 3. Настройки FFmpeg с keepalive
         ffmpeg_options = {
-            **FFMPEG_OPTIONS,
-            'options': f"{FFMPEG_OPTIONS['options']} -filter:a volume={final_volume}"
+            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+            'options': '-vn -nostdin'  # Ключевое исправление: добавляем -nostdin
         }
 
+        # 4. Создаем аудио источник
         audio_source = discord.FFmpegPCMAudio(
             audio_url,
-            before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-            options='-vn'
+            **ffmpeg_options
         )
         audio_source = discord.PCMVolumeTransformer(audio_source)
-        audio_source.volume = final_volume
+        audio_source.volume = (vol / 100) * 0.5
 
+        # 5. Функция завершения воспроизведения
         def after_playing(error):
             if error:
                 print(f"URL playback error: {error}")
-            asyncio.run_coroutine_threadsafe(controls.on_timeout(), bot.loop)
 
-        voice_client.play(audio_source, after=after_playing)
+            # Принудительное отключение при ошибке
+            if interaction.guild.voice_client:
+                coro = interaction.guild.voice_client.disconnect()
+                try:
+                    asyncio.run_coroutine_threadsafe(coro, bot.loop).result(timeout=2)
+                except:
+                    pass
 
-        message = await interaction.followup.send(
-            embed=controls.create_embed(),
-            view=controls
+        # 6. Запускаем воспроизведение
+        vc.play(audio_source, after=after_playing)
+
+        # 7. Отправляем сообщение с контролами
+        embed = discord.Embed(
+            title="🎶 Воспроизведение URL",
+            description=f"**{title}**\n"
+                        f"🔊 Громкость: {vol}%",
+            color=discord.Color.blue()
         )
-        controls.message = message
+        await interaction.followup.send(embed=embed)
 
     except Exception as e:
+        print(f"URL playback error: {e}")
         if interaction.guild.voice_client:
             await interaction.guild.voice_client.disconnect(force=True)
         await interaction.followup.send(f"❌ Ошибка: {str(e)}")
