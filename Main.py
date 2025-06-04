@@ -2597,37 +2597,39 @@ async def handle_url_playback(interaction, url, channel, volume):
     await interaction.response.defer()
 
     try:
-        # 1. Получаем информацию о треке (исправленная часть)
+        # 1. Получаем информацию о треке с проверкой URL
         ydl_opts = {
             'format': 'bestaudio/best',
+            'noplaylist': True,
+            'extract_audio': True,
+            'skip_download': True,
             'quiet': True,
-            'extract_flat': False  # Важно для получения прямых ссылок
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
             # Проверяем наличие URL
-            if 'url' not in info and 'entries' in info:
-                # Если это плейлист, берем первый трек
-                if len(info['entries']) > 0:
-                    info = info['entries'][0]
-                else:
-                    raise Exception("Плейлист пуст")
-
             if 'url' not in info:
-                raise Exception("Не удалось получить аудио URL")
+                if 'entries' in info and len(info['entries']) > 0:
+                    info = info['entries'][0]  # Берем первый трек из плейлиста
+                else:
+                    raise Exception("Не удалось получить аудио URL")
 
             audio_url = info['url']
             title = info.get('title', 'Неизвестный трек')
             duration = info.get('duration', 0)
 
-        # 2. Остальной код остается без изменений
-        vc = await channel.connect()
+        # 2. Подключаемся к голосовому каналу
+        voice_client = await channel.connect(timeout=10.0)
 
+        # 3. Создаем контролы с кнопками (сохраняем старую функциональность)
+        controls = URLControls(voice_client, vol, title, duration, interaction)
+
+        # 4. Настройки FFmpeg (с исправлением)
         ffmpeg_options = {
-            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-            'options': '-vn'
+            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin',
+            'options': '-vn -loglevel error'
         }
 
         audio_source = discord.FFmpegPCMAudio(
@@ -2637,31 +2639,26 @@ async def handle_url_playback(interaction, url, channel, volume):
         audio_source = discord.PCMVolumeTransformer(audio_source)
         audio_source.volume = (vol / 100) * 0.5
 
+        # 5. Функция завершения с контролами
         def after_playing(error):
             if error:
-                print(f"Ошибка воспроизведения: {error}")
-            if interaction.guild.voice_client:
-                coro = interaction.guild.voice_client.disconnect()
-                fut = asyncio.run_coroutine_threadsafe(coro, bot.loop)
-                try:
-                    fut.result(timeout=2)
-                except:
-                    pass
+                print(f"URL playback error: {error}")
+            asyncio.run_coroutine_threadsafe(controls.on_timeout(), bot.loop)
 
-        vc.play(audio_source, after=after_playing)
+        voice_client.play(audio_source, after=after_playing)
 
-        embed = discord.Embed(
-            title="🎶 Воспроизведение URL",
-            description=f"**{title}**\n🔊 Громкость: {vol}%",
-            color=discord.Color.blue()
+        # 6. Отправляем сообщение с кнопками (как в старом коде)
+        message = await interaction.followup.send(
+            embed=controls.create_embed(),
+            view=controls
         )
-        await interaction.followup.send(embed=embed)
+        controls.message = message
 
     except Exception as e:
-        print(f"Ошибка: {e}")
+        print(f"URL playback error: {e}")
         if interaction.guild.voice_client:
             await interaction.guild.voice_client.disconnect(force=True)
-        await interaction.followup.send(f"❌ Ошибка: {str(e)}", ephemeral=True)
+        await interaction.followup.send(f"❌ Ошибка: {str(e)}")
 
 # Основная команда (упрощенная версия для URL)
 @bot.tree.command(name="audio", description="Управление аудио (VK, звуки, URL)")
