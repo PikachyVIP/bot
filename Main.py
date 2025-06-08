@@ -2767,20 +2767,42 @@ async def audio_command(
                 await interaction.guild.voice_client.disconnect()
 
 
+
     elif type == "preset":
         if preset == "save":
             try:
                 with get_db_connection() as conn:
                     with conn.cursor() as cursor:
-                        cursor.execute("""
-                            INSERT INTO save_music_url (name, url)
-                            VALUES (%s, %s)
-                        """, (name, url))
+                        # Проверяем существование записи
+                        cursor.execute("SELECT 1 FROM save_music_url WHERE name = %s", (name,))
+                        if cursor.fetchone():
+                            # Обновляем URL, если имя уже существует
+                            cursor.execute("""
+                                UPDATE save_music_url 
+                                SET url = %s 
+                                WHERE name = %s
+                            """, (url, name))
+                        else:
+                            # Вставляем новую запись
+                            cursor.execute("""
+                                INSERT INTO save_music_url (name, url)
+                                VALUES (%s, %s)
+                            """, (name, url))
                         conn.commit()
+
+                        success_embed = discord.Embed(
+                            title="✅ Успешно",
+                            description=f"Сохранено: {name} → {url}",
+                            color=discord.Color.green()
+                        )
+                        await interaction.response.send_message(
+                            embed=success_embed,
+                            ephemeral=True
+                        )
             except Exception as e:
                 error_embed = discord.Embed(
                     title="❌ Ошибка",
-                    description=f": {str(e)}",
+                    description=f"Не удалось сохранить: {str(e)}",
                     color=discord.Color.red()
                 )
                 await interaction.response.send_message(
@@ -2814,7 +2836,7 @@ async def audio_command(
                     embed=error_embed,
                     ephemeral=True
                 )
-        if(preset == "start"):
+        if preset == "start":
             try:
                 with get_db_connection() as conn:
                     with conn.cursor() as cursor:
