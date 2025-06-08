@@ -2686,19 +2686,21 @@ async def handle_url_playback(interaction, url, channel, volume):
         # Подключаемся к голосовому каналу
         voice_client = await channel.connect(timeout=30.0)
 
-        # Настройки FFmpeg
+        # Настройки FFmpeg (используем PCM)
         ffmpeg_options = {
             'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin',
-            'options': '-vn -threads 1 -b:a 128k'
+            'options': '-vn -acodec pcm_s16le -f s16le -ar 48000 -ac 2 -threads 1'
         }
 
-        # Создаем аудио источник
-        audio_source = discord.FFmpegOpusAudio(
+        # Создаем аудио источник (PCM)
+        audio_source = discord.FFmpegPCMAudio(
             audio_url,
             **ffmpeg_options
         )
+
+        # Применяем регулятор громкости
         audio_source = discord.PCMVolumeTransformer(audio_source)
-        audio_source.volume = (vol / 100) * 0.5
+        audio_source.volume = vol / 100  # Громкость от 0.0 до 1.0
 
         # Создаем контролы
         controls = URLControls(voice_client, vol, title, duration, interaction)
