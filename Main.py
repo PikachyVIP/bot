@@ -95,6 +95,12 @@ def init_db():
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
                 )
             """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS save_music_url (
+                    name BIGINT PRIMARY KEY,
+                    url BIGINT NOT NULL
+                )
+            """)
             # cursor.execute("""
             #      CREATE TABLE IF NOT EXISTS bot_settings (
             #         guild_id BIGINT PRIMARY KEY,
@@ -1775,6 +1781,19 @@ def get_sound_files():
             sounds.append(file.split('.')[0])
     return sounds
 
+def get_urls_preset():
+    urls = []
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT url FROM save_music_url")
+
+            rows = cursor.fetchall()
+
+            for row in rows:
+                urls.append(row[0])
+
+            return urls
+
 
 def create_embed(title, description, color):
     return Embed(
@@ -1809,6 +1828,13 @@ async def audio_type_autocomplete(interaction: discord.Interaction, current: str
         for type_name in types if current.lower() in type_name.lower()
     ]
 
+async def preset_type_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    types = ["save", "start", "remove"]
+    return [
+        app_commands.Choice(name=type_name, value=type_name)
+        for type_name in types if current.lower() in type_name.lower()
+    ]
+
 
 async def vk_action_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
     actions = ["play", "stop", "skip", "queue", "volume"]
@@ -1820,6 +1846,13 @@ async def vk_action_autocomplete(interaction: discord.Interaction, current: str)
 
 async def sound_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
     sounds = get_sound_files()
+    return [
+               app_commands.Choice(name=sound, value=sound)
+               for sound in sounds if current.lower() in sound.lower()
+           ][:25]
+
+async def name_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    sounds = get_urls_preset()
     return [
                app_commands.Choice(name=sound, value=sound)
                for sound in sounds if current.lower() in sound.lower()
@@ -2664,8 +2697,10 @@ async def handle_url_playback(interaction, url, channel, volume):
 @bot.tree.command(name="audio", description="Управление аудио (VK, звуки, URL)")
 @app_commands.describe(
     type="Тип аудио (vkplayer/sound/url)",
+    preset="сохранить url чтоб потом запустить",
     action="Действие (только для vkplayer)",
     url="Ссылка (для vkplayer или url)",
+    name="название пресета для preset",
     channel="Голосовой канал",
     sound="Звук из библиотеки (только для sound)",
     volume="Громкость (1-100% для sound/url, 1-300% для vkplayer)"
@@ -2673,11 +2708,15 @@ async def handle_url_playback(interaction, url, channel, volume):
 @app_commands.autocomplete(
     type=audio_type_autocomplete,
     action=vk_action_autocomplete,
-    sound=sound_autocomplete
+    sound=sound_autocomplete,
+    preset=preset_type_autocomplete,
+    name=name_autocomplete
 )
 async def audio_command(
         interaction: discord.Interaction,
         type: str,
+        preset: Optional[str] = None,
+        name: Optional[str] = None,
         action: Optional[str] = None,
         url: Optional[str] = None,
         channel: Optional[discord.VoiceChannel] = None,
@@ -2726,6 +2765,88 @@ async def audio_command(
         finally:
             if interaction.guild.voice_client:
                 await interaction.guild.voice_client.disconnect()
+
+
+    elif type == "preset":
+        if preset == "save":
+            try:
+                with get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute("""
+                            INSERT INTO save_music_url (name, url)
+                            VALUES (%s, %s)
+                        """, (name, url))
+                        conn.commit()
+            except Exception as e:
+                error_embed = discord.Embed(
+                    title="❌ Ошибка",
+                    description=f": {str(e)}",
+                    color=discord.Color.red()
+                )
+                await interaction.response.send_message(
+                    embed=error_embed,
+                    ephemeral=True
+                )
+        if preset =="remove":
+            try:
+                with get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute("DELETE FROM save_music_url WHERE name = %s", (name,))
+                        conn.commit()
+
+                        success_embed = discord.Embed(
+                            title="✅ Успешно",
+                            description=f"Удалена запись с именем: {name}",
+                            color=discord.Color.green()
+                        )
+                        await interaction.response.send_message(
+                            embed=success_embed,
+                            ephemeral=True  # Сообщение видно только пользователю
+                        )
+
+            except Exception as e:
+                error_embed = discord.Embed(
+                    title="❌ Ошибка",
+                    description=f"Ошибка при удалении записи: {str(e)}",
+                    color=discord.Color.red()
+                )
+                await interaction.response.send_message(
+                    embed=error_embed,
+                    ephemeral=True
+                )
+        if(preset == "start"):
+            try:
+                with get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute("SELECT url FROM save_music_url WHERE name = %s", (name,))
+                        result = cursor.fetchone()  # Получаем одну запись (или None, если ничего не найдено)
+
+                        if result:
+                            url = result[0]  # Извлекаем URL из кортежа
+                            await handle_url_playback(interaction, url, channel, volume)
+                        else:
+                            not_found_embed = discord.Embed(
+                                title="🤔 Ничего не найдено",
+                                description=f"Запись с именем '{name}' не найдена.",
+                                color=discord.Color.orange()
+                            )
+                            await interaction.response.send_message(
+                                embed=not_found_embed,
+                                ephemeral=True
+                            )
+
+            except Exception as e:
+                error_embed = discord.Embed(
+                    title="❌ Ошибка",
+                    description=f"Ошибка при получении URL: {str(e)}",
+                    color=discord.Color.red()
+                )
+                await interaction.response.send_message(
+                    embed=error_embed,
+                    ephemeral=True
+                )
+
+
 
     elif type == "url":
         if not url:
