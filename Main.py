@@ -1781,18 +1781,18 @@ def get_sound_files():
             sounds.append(file.split('.')[0])
     return sounds
 
-def get_urls_preset():
-    urls = []
+def get_name_preset():
+    names = []
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
-            cursor.execute("SELECT url FROM save_music_url")
+            cursor.execute("SELECT name FROM save_music_url")
 
             rows = cursor.fetchall()
 
             for row in rows:
-                urls.append(row[0])
+                names.append(row[0])
 
-            return urls
+            return names
 
 
 def create_embed(title, description, color):
@@ -1852,7 +1852,7 @@ async def sound_autocomplete(interaction: discord.Interaction, current: str) -> 
            ][:25]
 
 async def name_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
-    sounds = get_urls_preset()
+    sounds = get_name_preset()
     return [
                app_commands.Choice(name=sound, value=sound)
                for sound in sounds if current.lower() in sound.lower()
