@@ -97,8 +97,8 @@ def init_db():
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS save_music_url (
-                    name BIGINT PRIMARY KEY,
-                    url BIGINT NOT NULL
+                    name VARCHAR(255) PRIMARY KEY,
+                    url TEXT NOT NULL
                 )
             """)
             # cursor.execute("""
