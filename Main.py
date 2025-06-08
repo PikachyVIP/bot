@@ -2507,14 +2507,20 @@ class URLControls(discord.ui.View):
         self._keep_alive_task = None
         self._is_stopped = False
 
+    def after_playing(self, error):
+        """Обработчик завершения воспроизведения"""
+        if error:
+            print(f"Playback finished with error: {error}")
+
+        coro = self.cleanup()
+        asyncio.run_coroutine_threadsafe(coro, self.interaction.client.loop)
+
     async def ensure_voice_keepalive(self):
         """Фоновая задача для поддержания соединения"""
         while not self._is_stopped and self.voice_client and self.voice_client.is_connected():
             try:
-                # Отправляем "keepalive" пакеты каждые 20 секунд
                 await asyncio.sleep(20)
                 if self.voice_client.is_playing() and not self.voice_client.is_paused():
-                    # Обновляем состояние воспроизведения
                     await self.update_controls()
             except:
                 break
