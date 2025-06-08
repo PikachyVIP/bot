@@ -2491,7 +2491,7 @@ async def update_progress(guild_id):
 # Класс для управления воспроизведением URL
 class URLControls(discord.ui.View):
     def __init__(self, voice_client, initial_volume, title, duration, interaction):
-        super().__init__(timeout=180)  # 3 минуты таймаут
+        super().__init__(timeout=None)
         self.voice_client = voice_client
         self.volume = initial_volume
         self.title = title
@@ -2504,23 +2504,49 @@ class URLControls(discord.ui.View):
         self.is_paused = False
         self.pause_time = 0
         self.pause_duration = 0
+        self._keep_alive_task = None
+        self._is_stopped = False
+
+    async def ensure_voice_keepalive(self):
+        """Фоновая задача для поддержания соединения"""
+        while not self._is_stopped and self.voice_client and self.voice_client.is_connected():
+            try:
+                # Отправляем "keepalive" пакеты каждые 20 секунд
+                await asyncio.sleep(20)
+                if self.voice_client.is_playing() and not self.voice_client.is_paused():
+                    # Обновляем состояние воспроизведения
+                    await self.update_controls()
+            except:
+                break
 
     async def on_timeout(self):
-        """Корректное отключение голосового клиента при таймауте"""
-        if not self._deleted and self.voice_client:
-            try:
-                # Останавливаем воспроизведение перед отключением
-                if self.voice_client.is_playing() or self.voice_client.is_paused():
-                    self.voice_client.stop()
+        """Обработчик таймаута теперь не отключает бота"""
+        self._is_stopped = True
+        if self._keep_alive_task:
+            self._keep_alive_task.cancel()
+        await self.cleanup()
 
-                # Ждем завершения FFmpeg
-                await asyncio.sleep(0.5)
+    async def cleanup(self):
+        """Безопасное завершение всех ресурсов"""
+        if self._deleted:
+            return
 
-                # Отключаемся от канала
-                await self.voice_client.disconnect(force=True)
-            except Exception as e:
-                print(f"Disconnect error: {e}")
         self._deleted = True
+        try:
+            if self.voice_client:
+                if self.voice_client.is_playing():
+                    self.voice_client.stop()
+                await asyncio.sleep(1)
+                if self.voice_client.is_connected():
+                    await self.voice_client.disconnect(force=True)
+        except Exception as e:
+            print(f"Cleanup error: {e}")
+
+        if self.message:
+            try:
+                await self.message.delete()
+            except:
+                pass
 
     def create_embed(self):
         """Создает embed для отображения информации о воспроизведении"""
@@ -2587,35 +2613,10 @@ class URLControls(discord.ui.View):
 
     @discord.ui.button(label="⏹", style=discord.ButtonStyle.red)
     async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """Улучшенная обработка остановки"""
+        """Обработчик кнопки остановки"""
         await interaction.response.defer()
-
-        if self._deleted:
-            return
-
-        self._deleted = True
-        try:
-            if self.voice_client:
-                # Останавливаем перед отключением
-                if self.voice_client.is_playing() or self.voice_client.is_paused():
-                    self.voice_client.stop()
-
-                # Даем время на завершение
-                await asyncio.sleep(0.5)
-
-                # Отключаемся
-                await self.voice_client.disconnect(force=True)
-        except Exception as e:
-            print(f"Stop error: {e}")
-
-        # Удаляем сообщение
-        if self.message:
-            try:
-                await self.message.delete()
-            except:
-                pass
-
-        await interaction.response.defer()
+        self._is_stopped = True
+        await self.cleanup()
 
     @discord.ui.button(label="🔉", style=discord.ButtonStyle.grey)
     async def volume_down(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -2657,16 +2658,17 @@ async def handle_url_playback(interaction, url, channel, volume):
     await interaction.response.defer()
 
     try:
-        # 1. Проверяем, подключен ли уже бот
+        # Проверяем существующее подключение
         if interaction.guild.voice_client:
             await interaction.guild.voice_client.disconnect(force=True)
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1)
 
-        # 2. Получаем информацию о треке
+        # Получаем информацию о треке
         ydl_opts = {
             'format': 'bestaudio/best',
             'noplaylist': True,
             'quiet': True,
+            'extract_flat': True
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -2681,36 +2683,31 @@ async def handle_url_playback(interaction, url, channel, volume):
             title = info.get('title', 'Неизвестный трек')
             duration = info.get('duration', 0)
 
-        # 3. Подключаемся к голосовому каналу
-        voice_client = await channel.connect(timeout=10.0)
+        # Подключаемся к голосовому каналу
+        voice_client = await channel.connect(timeout=30.0)
 
-        # 4. Настройки FFmpeg с улучшенными параметрами
+        # Настройки FFmpeg
         ffmpeg_options = {
             'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin',
-            'options': '-vn -loglevel error -threads 1'
+            'options': '-vn -threads 1 -b:a 128k'
         }
 
-        # 5. Создаем аудио источник
-        def after_playing(error):
-            if error:
-                print(f"Playback error: {error}")
-            coro = voice_client.disconnect(force=True)
-            asyncio.run_coroutine_threadsafe(coro, interaction.client.loop)
-
-        audio_source = discord.FFmpegPCMAudio(
+        # Создаем аудио источник
+        audio_source = discord.FFmpegOpusAudio(
             audio_url,
             **ffmpeg_options
         )
         audio_source = discord.PCMVolumeTransformer(audio_source)
         audio_source.volume = (vol / 100) * 0.5
 
-        # 6. Создаем контролы
+        # Создаем контролы
         controls = URLControls(voice_client, vol, title, duration, interaction)
+        controls._keep_alive_task = interaction.client.loop.create_task(controls.ensure_voice_keepalive())
 
-        # 7. Запускаем воспроизведение
-        voice_client.play(audio_source, after=after_playing)
+        # Запускаем воспроизведение
+        voice_client.play(audio_source, after=controls.after_playing)
 
-        # 8. Отправляем сообщение
+        # Отправляем сообщение с контролами
         message = await interaction.followup.send(
             embed=controls.create_embed(),
             view=controls
@@ -2718,10 +2715,10 @@ async def handle_url_playback(interaction, url, channel, volume):
         controls.message = message
 
     except Exception as e:
-        print(f"URL playback error: {e}")
+        print(f"Playback error: {e}")
         if interaction.guild.voice_client:
             await interaction.guild.voice_client.disconnect(force=True)
-        await interaction.followup.send(f"❌ Ошибка: {str(e)}")
+        await interaction.followup.send(f"❌ Ошибка: {str(e)}", ephemeral=True)
 
 # Основная команда (упрощенная версия для URL)
 @bot.tree.command(name="audio", description="Управление аудио (VK, звуки, URL)")
