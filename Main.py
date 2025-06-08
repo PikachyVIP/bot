@@ -1822,7 +1822,7 @@ async def delete_message_later(message, delay):
 
 # Автодополнения
 async def audio_type_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
-    types = ["vkplayer", "sound", "url"]
+    types = ["vkplayer", "sound", "url", "preset"]
     return [
         app_commands.Choice(name=type_name, value=type_name)
         for type_name in types if current.lower() in type_name.lower()
