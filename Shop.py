@@ -6,7 +6,6 @@ from mysql.connector import Error
 from data import mysqlconf
 
 
-
 class Shop(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -38,6 +37,28 @@ class Shop(commands.Cog):
         except Error as e:
             print(f"Ошибка при получении XP: {e}")
             return 0
+        finally:
+            if conn and conn.is_connected():
+                conn.close()
+
+    async def update_user_xp(self, user_id, amount):
+        """Обновляет XP пользователя"""
+        conn = self.get_db_connection()
+        if not conn:
+            return False
+
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE user_levels SET xp = xp - %s WHERE user_id = %s",
+                (amount, user_id)
+            )
+            conn.commit()
+            return True
+        except Error as e:
+            print(f"Ошибка при обновлении XP: {e}")
+            conn.rollback()
+            return False
         finally:
             if conn and conn.is_connected():
                 conn.close()
@@ -113,18 +134,27 @@ class Shop(commands.Cog):
             cancel_button = discord.ui.Button(label="Отмена", style=discord.ButtonStyle.red)
 
             async def confirm_callback(interaction: discord.Interaction):
-                if await self.update_user_xp(interaction.user.id, role_data['price']):
-                    await interaction.user.add_roles(target_role)
-                    success_embed = discord.Embed(
-                        title="Покупка успешна!",
-                        description=f"Вы получили роль {target_role.mention} за {role_data['price']} XP!",
-                        color=discord.Color.green()
-                    )
-                    await interaction.response.edit_message(embed=success_embed, view=None)
-                else:
-                    await interaction.response.send_message(
-                        "Произошла ошибка при обновлении XP. Пожалуйста, попробуйте позже.",
-                        ephemeral=True
+                try:
+                    if await self.update_user_xp(interaction.user.id, role_data['price']):
+                        await interaction.user.add_roles(target_role)
+                        success_embed = discord.Embed(
+                            title="Покупка успешна!",
+                            description=f"Вы получили роль {target_role.mention} за {role_data['price']} XP!",
+                            color=discord.Color.green()
+                        )
+                        await interaction.response.edit_message(embed=success_embed, view=None)
+                    else:
+                        await interaction.response.edit_message(
+                            content="Произошла ошибка при обновлении XP. Пожалуйста, попробуйте позже.",
+                            embed=None,
+                            view=None
+                        )
+                except Exception as e:
+                    print(f"Ошибка при обработке покупки: {e}")
+                    await interaction.response.edit_message(
+                        content="Произошла ошибка при обработке вашего запроса.",
+                        embed=None,
+                        view=None
                     )
 
             confirm_button.callback = confirm_callback
