@@ -6,33 +6,31 @@ from mysql.connector import Error
 from data import mysqlconf
 
 
-class EventCommands(commands.Cog):
+class Shop(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.MYSQL_CONFIG = mysqlconf  # Используем конфиг напрямую из mysqlconf
+        self.MYSQL_CONFIG = mysqlconf
 
-        # Словарь с доступными ролями и их стоимостью
         self.shop_roles = {
-            "✔": {"price": 1000, "description": "testrole"}
+            "✔": {"price": 1000, "description": "тестроль"}
         }
 
     def get_db_connection(self):
-        """Создает и возвращает подключение к MySQL"""
+        """Создает подключение к базе данных"""
         try:
-            connection = mysql.connector.connect(**self.MYSQL_CONFIG)
-            return connection
+            return mysql.connector.connect(**self.MYSQL_CONFIG)
         except Error as e:
             print(f"Ошибка подключения к MySQL: {e}")
             return None
 
     async def get_user_xp(self, user_id):
-        """Получает количество XP пользователя"""
-        connection = self.get_db_connection()
-        if not connection:
+        """Получает XP пользователя"""
+        conn = self.get_db_connection()
+        if not conn:
             return 0
 
         try:
-            cursor = connection.cursor(dictionary=True)
+            cursor = conn.cursor(dictionary=True)
             cursor.execute("SELECT xp FROM user_levels WHERE user_id = %s", (user_id,))
             result = cursor.fetchone()
             return result['xp'] if result else 0
@@ -40,34 +38,12 @@ class EventCommands(commands.Cog):
             print(f"Ошибка при получении XP: {e}")
             return 0
         finally:
-            if connection.is_connected():
-                connection.close()
-
-    async def update_user_xp(self, user_id, amount):
-        """Обновляет количество XP пользователя"""
-        connection = self.get_db_connection()
-        if not connection:
-            return False
-
-        try:
-            cursor = connection.cursor()
-            cursor.execute(
-                "UPDATE user_levels SET xp = xp - %s WHERE user_id = %s",
-                (amount, user_id)
-            )
-            connection.commit()
-            return True
-        except Error as e:
-            print(f"Ошибка при обновлении XP: {e}")
-            connection.rollback()
-            return False
-        finally:
-            if connection.is_connected():
-                connection.close()
+            if conn and conn.is_connected():
+                conn.close()
 
     @app_commands.command(name="shop", description="Магазин ролей за XP")
     async def shop_command(self, interaction: discord.Interaction):
-        """Команда магазина ролей"""
+        """Обработчик команды /shop"""
         await interaction.response.defer(ephemeral=True)
         try:
             await interaction.delete_original_response()
@@ -89,7 +65,7 @@ class EventCommands(commands.Cog):
                 inline=False
             )
 
-        view = discord.ui.View()
+        view = discord.ui.View(timeout=None)
         role_select = discord.ui.Select(
             placeholder="Выберите роль для покупки",
             options=[
@@ -174,6 +150,6 @@ class EventCommands(commands.Cog):
 
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
-
-async def setup(bot):
-    await bot.add_cog(EventCommands(bot))
+    @classmethod
+    async def setup(cls, bot):
+        await bot.add_cog(cls(bot))

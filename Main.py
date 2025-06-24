@@ -16,11 +16,12 @@ import os
 from os import environ
 import yt_dlp
 from data import token, assettoken, mysqlconf
-import Shop
+
 
 import Calendar
 import install_multivoice
 from Calendar import setup
+from Shop import Shop
 from install_multivoice import setup
 from discord.utils import setup_logging
 
