@@ -6,6 +6,24 @@ from mysql.connector import Error
 from data import mysqlconf
 
 
+
+LEVELS_CONFIG = {
+    1: {"xp": 0, "role": "🔹 Капелька Опыта"},
+    2: {"xp": 100, "role": "🌱 Росток Знаний"},
+    3: {"xp": 250, "role": "🌀 Вихрь Начинаний"},
+    4: {"xp": 450, "role": "🌠 Метеор Усердия"},
+    5: {"xp": 700, "role": "🛡️ Страж Мудрости"},
+    6: {"xp": 1000, "role": "⚔️ Рыцарь Дискуссий"},
+    7: {"xp": 1350, "role": "🌌 Хранитель Традиций"},
+    8: {"xp": 1750, "role": "🏰 Архитектор Сообщества"},
+    9: {"xp": 2200, "role": "🔮 Маг Контента"},
+    10: {"xp": 2700, "role": "🐉 Легенда Чата"},
+    11: {"xp": 3250, "role": "🌋 Повелитель Активности"},
+    12: {"xp": 3850, "role": "⚡ Император Диалогов"},
+    13: {"xp": 4500, "role": "🌟 Создатель Реальности"}
+}
+
+
 class Shop(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -74,9 +92,19 @@ class Shop(commands.Cog):
 
         user_xp = await self.get_user_xp(interaction.user.id)
 
+        def calculate_level(xp: int) -> int:
+            """Вычисляет уровень пользователя на основе его XP"""
+            for level, data in sorted(LEVELS_CONFIG.items(), reverse=True):
+                if xp >= data["xp"]:
+                    return level
+            return 1
+
+        # Проверяем текущий уровень пользователя
+        current_level = calculate_level(user_xp)
+
         embed = discord.Embed(
             title="🏪 Магазин ролей",
-            description=f"Ваш баланс: **{user_xp} XP**\n\nВыберите роль для покупки:",
+            description=f"Ваш баланс: **{user_xp} XP** (Уровень {current_level})\n\nВыберите роль для покупки:",
             color=discord.Color.gold()
         )
 
@@ -98,6 +126,21 @@ class Shop(commands.Cog):
                 ) for role_name, data in self.shop_roles.items()
             ]
         )
+
+        async def update_roles(member: discord.Member, new_level: int):
+            """Обновляет роли пользователя в соответствии с его уровнем"""
+            # Удаляем все старые роли уровней
+            for level_data in LEVELS_CONFIG.values():
+                role = discord.utils.get(member.guild.roles, name=level_data["role"])
+                if role and role in member.roles:
+                    await member.remove_roles(role)
+
+            # Добавляем новую роль уровня
+            new_role_data = LEVELS_CONFIG.get(new_level)
+            if new_role_data:
+                new_role = discord.utils.get(member.guild.roles, name=new_role_data["role"])
+                if new_role:
+                    await member.add_roles(new_role)
 
         async def select_callback(interaction: discord.Interaction):
             selected_role_name = role_select.values[0]
@@ -136,10 +179,40 @@ class Shop(commands.Cog):
             async def confirm_callback(interaction: discord.Interaction):
                 try:
                     if await self.update_user_xp(interaction.user.id, role_data['price']):
+                        # Выдаем купленную роль
                         await interaction.user.add_roles(target_role)
+
+                        # Обновляем уровень и роли
+                        new_xp = user_xp - role_data['price']
+                        new_level = calculate_level(new_xp)
+
+                        # Обновляем уровень в базе данных
+                        conn = self.get_db_connection()
+                        if conn:
+                            try:
+                                cursor = conn.cursor()
+                                cursor.execute(
+                                    "UPDATE user_levels SET level = %s WHERE user_id = %s",
+                                    (new_level, interaction.user.id)
+                                )
+                                conn.commit()
+                            finally:
+                                if conn.is_connected():
+                                    conn.close()
+
+                        # Обновляем роли уровня
+                        await update_roles(interaction.user, new_level)
+
+                        # Получаем название новой роли уровня
+                        new_role_name = LEVELS_CONFIG.get(new_level, {}).get("role", "Неизвестная роль")
+
                         success_embed = discord.Embed(
                             title="Покупка успешна!",
-                            description=f"Вы получили роль {target_role.mention} за {role_data['price']} XP!",
+                            description=(
+                                f"Вы получили роль {target_role.mention} за {role_data['price']} XP!\n"
+                                f"Ваш новый баланс: **{new_xp} XP** (Уровень {new_level})\n"
+                                f"Новая роль уровня: **{new_role_name}**"
+                            ),
                             color=discord.Color.green()
                         )
                         await interaction.response.edit_message(embed=success_embed, view=None)
