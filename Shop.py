@@ -2,58 +2,86 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import mysql.connector
+from mysql.connector import Error
 from data import mysqlconf
 
 
 class EventCommands(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.db_connection = mysql.connector.connect(
-            host=mysqlconf.host,
-            user=mysqlconf.user,
-            password=mysqlconf.password,
-            database=mysqlconf.database
-        )
+        self.MYSQL_CONFIG = mysqlconf  # Используем конфиг напрямую из mysqlconf
 
-        # Словарь с доступными ролями и их стоимостью (можно расширять)
+        # Словарь с доступными ролями и их стоимостью
         self.shop_roles = {
-            "✔": {"price": 1000, "description": "TESTROLE"}
+            "✔": {"price": 1000, "description": "testrole"}
         }
 
+    def get_db_connection(self):
+        """Создает и возвращает подключение к MySQL"""
+        try:
+            connection = mysql.connector.connect(**self.MYSQL_CONFIG)
+            return connection
+        except Error as e:
+            print(f"Ошибка подключения к MySQL: {e}")
+            return None
+
     async def get_user_xp(self, user_id):
-        cursor = self.db_connection.cursor(dictionary=True)
-        cursor.execute("SELECT xp FROM user_levels WHERE user_id = %s", (user_id,))
-        result = cursor.fetchone()
-        return result['xp'] if result else 0
+        """Получает количество XP пользователя"""
+        connection = self.get_db_connection()
+        if not connection:
+            return 0
+
+        try:
+            cursor = connection.cursor(dictionary=True)
+            cursor.execute("SELECT xp FROM user_levels WHERE user_id = %s", (user_id,))
+            result = cursor.fetchone()
+            return result['xp'] if result else 0
+        except Error as e:
+            print(f"Ошибка при получении XP: {e}")
+            return 0
+        finally:
+            if connection.is_connected():
+                connection.close()
 
     async def update_user_xp(self, user_id, amount):
-        cursor = self.db_connection.cursor()
-        cursor.execute(
-            "UPDATE user_levels SET xp = xp - %s WHERE user_id = %s",
-            (amount, user_id)
-        )
-        self.db_connection.commit()
+        """Обновляет количество XP пользователя"""
+        connection = self.get_db_connection()
+        if not connection:
+            return False
+
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                "UPDATE user_levels SET xp = xp - %s WHERE user_id = %s",
+                (amount, user_id)
+            )
+            connection.commit()
+            return True
+        except Error as e:
+            print(f"Ошибка при обновлении XP: {e}")
+            connection.rollback()
+            return False
+        finally:
+            if connection.is_connected():
+                connection.close()
 
     @app_commands.command(name="shop", description="Магазин ролей за XP")
     async def shop_command(self, interaction: discord.Interaction):
-        # Удаляем оригинальный ответ (сообщение с командой)
+        """Команда магазина ролей"""
         await interaction.response.defer(ephemeral=True)
         try:
             await interaction.delete_original_response()
         except:
             pass
 
-        # Получаем текущий XP пользователя
         user_xp = await self.get_user_xp(interaction.user.id)
 
-        # Создаем Embed с информацией о магазине
         embed = discord.Embed(
             title="🏪 Магазин ролей",
             description=f"Ваш баланс: **{user_xp} XP**\n\nВыберите роль для покупки:",
             color=discord.Color.gold()
         )
 
-        # Добавляем информацию о каждой роли в Embed
         for role_name, data in self.shop_roles.items():
             embed.add_field(
                 name=f"{role_name} - {data['price']} XP",
@@ -61,10 +89,7 @@ class EventCommands(commands.Cog):
                 inline=False
             )
 
-        # Создаем View с селектором ролей
         view = discord.ui.View()
-
-        # Выпадающий список с ролями
         role_select = discord.ui.Select(
             placeholder="Выберите роль для покупки",
             options=[
@@ -80,7 +105,6 @@ class EventCommands(commands.Cog):
             selected_role_name = role_select.values[0]
             role_data = self.shop_roles[selected_role_name]
 
-            # Проверяем наличие роли на сервере
             target_role = discord.utils.get(interaction.guild.roles, name=selected_role_name)
             if not target_role:
                 return await interaction.response.send_message(
@@ -88,21 +112,18 @@ class EventCommands(commands.Cog):
                     ephemeral=True
                 )
 
-            # Проверяем баланс
             if user_xp < role_data['price']:
                 return await interaction.response.send_message(
                     f"Недостаточно XP! Нужно {role_data['price']} XP, у вас {user_xp} XP.",
                     ephemeral=True
                 )
 
-            # Проверяем, есть ли уже эта роль
             if target_role in interaction.user.roles:
                 return await interaction.response.send_message(
                     f"У вас уже есть роль {target_role.mention}!",
                     ephemeral=True
                 )
 
-            # Подтверждение покупки
             confirm_embed = discord.Embed(
                 title="Подтверждение покупки",
                 description=f"Вы уверены, что хотите купить роль {target_role.mention} за {role_data['price']} XP?",
@@ -111,35 +132,26 @@ class EventCommands(commands.Cog):
 
             confirm_view = discord.ui.View()
 
-            # Кнопка подтверждения
-            confirm_button = discord.ui.Button(
-                label="Подтвердить",
-                style=discord.ButtonStyle.green
-            )
+            confirm_button = discord.ui.Button(label="Подтвердить", style=discord.ButtonStyle.green)
+            cancel_button = discord.ui.Button(label="Отмена", style=discord.ButtonStyle.red)
 
             async def confirm_callback(interaction: discord.Interaction):
-                # Списываем XP
-                await self.update_user_xp(interaction.user.id, role_data['price'])
-
-                # Выдаем роль
-                await interaction.user.add_roles(target_role)
-
-                # Отправляем подтверждение
-                success_embed = discord.Embed(
-                    title="Покупка успешна!",
-                    description=f"Вы получили роль {target_role.mention} за {role_data['price']} XP!",
-                    color=discord.Color.green()
-                )
-                await interaction.response.edit_message(embed=success_embed, view=None)
+                if await self.update_user_xp(interaction.user.id, role_data['price']):
+                    await interaction.user.add_roles(target_role)
+                    success_embed = discord.Embed(
+                        title="Покупка успешна!",
+                        description=f"Вы получили роль {target_role.mention} за {role_data['price']} XP!",
+                        color=discord.Color.green()
+                    )
+                    await interaction.response.edit_message(embed=success_embed, view=None)
+                else:
+                    await interaction.response.send_message(
+                        "Произошла ошибка при обновлении XP. Пожалуйста, попробуйте позже.",
+                        ephemeral=True
+                    )
 
             confirm_button.callback = confirm_callback
             confirm_view.add_item(confirm_button)
-
-            # Кнопка отмены
-            cancel_button = discord.ui.Button(
-                label="Отмена",
-                style=discord.ButtonStyle.red
-            )
 
             async def cancel_callback(interaction: discord.Interaction):
                 await interaction.response.edit_message(
@@ -160,11 +172,7 @@ class EventCommands(commands.Cog):
         role_select.callback = select_callback
         view.add_item(role_select)
 
-        # Отправляем основное меню магазина
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-
-    def cog_unload(self):
-        self.db_connection.close()
 
 
 async def setup(bot):
