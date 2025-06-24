@@ -16,6 +16,7 @@ import os
 from os import environ
 import yt_dlp
 from data import token, assettoken, mysqlconf
+import Shop
 
 import Calendar
 import install_multivoice
@@ -473,6 +474,7 @@ async def on_ready():
     # Регистрируем персистентное View
     await install_multivoice.setup(bot)
     await Calendar.setup(bot)
+    await Shop.setup(bot)
     bot.add_view(ThreadControlView())
     try:
         # Синхронизируем команды с Discord
