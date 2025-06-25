@@ -1654,7 +1654,7 @@ async def set_info(interaction: discord.Interaction, text: str):
     xp="Количество XP для установки"
 )
 @app_commands.checks.has_permissions(administrator=True)
-async def admprofile(interaction: discord.Interaction, member: discord.Member, xp: int):
+async def admprofile(interaction: discord.Interaction, member: discord.Member, action: str, xp: Optional[int] = None, boost: Optional[str] = None,):
     """Устанавливает XP пользователю и обновляет его уровень"""
     # Дополнительная проверка прав через кастомную систему
     if not await check_command_access_app(interaction):
@@ -1666,44 +1666,80 @@ async def admprofile(interaction: discord.Interaction, member: discord.Member, x
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                # 1. Обновляем XP и вычисляем новый уровень
-                new_level = calculate_level(xp)
-                cursor.execute("""
-                    INSERT INTO user_levels (user_id, xp, level)
-                    VALUES (%s, %s, %s)
-                    ON DUPLICATE KEY UPDATE 
-                        xp = VALUES(xp),
-                        level = VALUES(level)
-                """, (member.id, xp, new_level))
-                conn.commit()
 
-                # 2. Обновляем роли
-                await update_roles(member, new_level)
+                if action == "xp":
+                    new_level = calculate_level(xp)
+                    cursor.execute("""
+                        INSERT INTO user_levels (user_id, xp, level)
+                        VALUES (%s, %s, %s)
+                        ON DUPLICATE KEY UPDATE 
+                            xp = VALUES(xp),
+                            level = VALUES(level)
+                    """, (member.id, xp, new_level))
+                    conn.commit()
 
-                # 3. Получаем информацию для ответа
-                cursor.execute("""
-                    SELECT level FROM user_levels
-                    WHERE user_id = %s
-                """, (member.id,))
-                current_level = cursor.fetchone()[0]
-                role_name = LEVELS_CONFIG.get(current_level, {}).get("role", "Неизвестная роль")
+                    # 2. Обновляем роли
+                    await update_roles(member, new_level)
 
-                # Формируем красивый ответ
-                embed = discord.Embed(
-                    title="✅ XP успешно обновлены",
-                    color=discord.Color.green(),
-                    timestamp=datetime.datetime.now()
-                )
-                embed.add_field(name="Пользователь", value=member.mention, inline=True)
-                embed.add_field(name="XP", value=str(xp), inline=True)
-                embed.add_field(name="Уровень", value=f"Уровень {current_level}", inline=True)
-                embed.add_field(name="Роль", value=role_name, inline=False)
-                embed.set_footer(
-                    text=f"Изменено администратором: {interaction.user.display_name}",
-                    icon_url=interaction.user.display_avatar.url
-                )
+                    # 3. Получаем информацию для ответа
+                    cursor.execute("""
+                        SELECT level FROM user_levels
+                        WHERE user_id = %s
+                    """, (member.id,))
+                    current_level = cursor.fetchone()[0]
+                    role_name = LEVELS_CONFIG.get(current_level, {}).get("role", "Неизвестная роль")
 
-                await interaction.response.send_message(embed=embed)
+                    # Формируем красивый ответ
+                    embed = discord.Embed(
+                        title="✅ XP успешно обновлены",
+                        color=discord.Color.green(),
+                        timestamp=datetime.datetime.now()
+                    )
+                    embed.add_field(name="Пользователь", value=member.mention, inline=True)
+                    embed.add_field(name="XP", value=str(xp), inline=True)
+                    embed.add_field(name="Уровень", value=f"Уровень {current_level}", inline=True)
+                    embed.add_field(name="Роль", value=role_name, inline=False)
+                    embed.set_footer(
+                        text=f"Изменено администратором: {interaction.user.display_name}",
+                        icon_url=interaction.user.display_avatar.url
+                    )
+
+                    await interaction.response.send_message(embed=embed)
+
+                if action == "boost":
+                    cursor.execute("""
+                        INSERT INTO user_levels (user_id, boost)
+                        VALUES (%s, %s, %s)
+                        ON DUPLICATE KEY UPDATE 
+                            boost = VALUES(boost)
+                    """, (member.id, boost))
+                    conn.commit()
+
+                    cursor.execute("""
+                        SELECT level FROM user_levels
+                        WHERE user_id = %s
+                    """, (member.id,))
+                    current_level = cursor.fetchone()[0]
+                    role_name = LEVELS_CONFIG.get(current_level, {}).get("role", "Неизвестная роль")
+
+                    # Формируем красивый ответ
+                    embed = discord.Embed(
+                        title="✅ XP успешно обновлены",
+                        color=discord.Color.green(),
+                        timestamp=datetime.datetime.now()
+                    )
+                    embed.add_field(name="Пользователь", value=member.mention, inline=True)
+                    embed.add_field(name="XP", value=str(xp), inline=True)
+                    embed.add_field(name="Уровень", value=f"Уровень {current_level}", inline=True)
+                    embed.add_field(name="Роль", value=role_name, inline=False)
+                    embed.add_field(name="Бусты", value=boost, inline=False)
+                    embed.set_footer(
+                        text=f"Изменено администратором: {interaction.user.display_name}",
+                        icon_url=interaction.user.display_avatar.url
+                    )
+
+                    await interaction.response.send_message(embed=embed)
+
 
     except Exception as e:
         error_embed = discord.Embed(
