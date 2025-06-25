@@ -1572,6 +1572,10 @@ async def profile(interaction: discord.Interaction, member: discord.Member = Non
             draw.text((boost_x, bar_y - 80), boost_text, font=boost_font, fill="#FFD700")
         except Exception as e:
             print(f"Ошибка при отображении бустов: {e}")
+            await interaction.response.send_message(
+                f"❌ Произошла ошибка бустов {e}",
+                ephemeral=True
+            )
 
         # Сохраняем и отправляем
         buffer = io.BytesIO()
