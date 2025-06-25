@@ -1647,16 +1647,25 @@ async def set_info(interaction: discord.Interaction, text: str):
 
 @bot.tree.command(
     name="admprofile",
-    description="Управление XP и уровнем пользователя (только для админов)"
+    description="Управление XP и бустами пользователя (только для админов)"
 )
 @app_commands.describe(
     member="Пользователь",
-    xp="Количество XP для установки"
+    action="Что изменить",
+    value="Количество (XP или бустов)"
+)
+@app_commands.choices(
+    action=[
+        app_commands.Choice(name="xp", value="xp"),
+        app_commands.Choice(name="boost", value="boost")
+    ]
 )
 @app_commands.checks.has_permissions(administrator=True)
-async def admprofile(interaction: discord.Interaction, member: discord.Member, action: str, xp: Optional[int] = None, boost: Optional[str] = None,):
-    """Устанавливает XP пользователю и обновляет его уровень"""
-    # Дополнительная проверка прав через кастомную систему
+async def admprofile(interaction: discord.Interaction,
+                     member: discord.Member,
+                     action: app_commands.Choice[str],
+                     value: int):
+    """Управление XP и бустами пользователя"""
     if not await check_command_access_app(interaction):
         return await interaction.response.send_message(
             "❌ Недостаточно прав",
@@ -1666,85 +1675,57 @@ async def admprofile(interaction: discord.Interaction, member: discord.Member, a
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-
-                if action == "xp":
-                    new_level = calculate_level(xp)
+                if action.value == "xp":
+                    # Логика для изменения XP
+                    new_level = calculate_level(value)
                     cursor.execute("""
                         INSERT INTO user_levels (user_id, xp, level)
                         VALUES (%s, %s, %s)
                         ON DUPLICATE KEY UPDATE 
                             xp = VALUES(xp),
                             level = VALUES(level)
-                    """, (member.id, xp, new_level))
-                    conn.commit()
+                    """, (member.id, value, new_level))
 
-                    # 2. Обновляем роли
+                    # Обновляем роли
                     await update_roles(member, new_level)
 
-                    # 3. Получаем информацию для ответа
-                    cursor.execute("""
-                        SELECT level FROM user_levels
-                        WHERE user_id = %s
-                    """, (member.id,))
-                    current_level = cursor.fetchone()[0]
-                    role_name = LEVELS_CONFIG.get(current_level, {}).get("role", "Неизвестная роль")
+                    # Получаем информацию о роли
+                    role_name = LEVELS_CONFIG.get(new_level, {}).get("role", "Неизвестная роль")
+                    result_field = ("Уровень", f"Уровень {new_level}\nРоль: {role_name}")
 
-                    # Формируем красивый ответ
-                    embed = discord.Embed(
-                        title="✅ XP успешно обновлены",
-                        color=discord.Color.green(),
-                        timestamp=datetime.datetime.now()
-                    )
-                    embed.add_field(name="Пользователь", value=member.mention, inline=True)
-                    embed.add_field(name="XP", value=str(xp), inline=True)
-                    embed.add_field(name="Уровень", value=f"Уровень {current_level}", inline=True)
-                    embed.add_field(name="Роль", value=role_name, inline=False)
-                    embed.set_footer(
-                        text=f"Изменено администратором: {interaction.user.display_name}",
-                        icon_url=interaction.user.display_avatar.url
-                    )
-
-                    await interaction.response.send_message(embed=embed)
-
-                if action == "boost":
+                elif action.value == "boost":
+                    # Логика для изменения бустов
                     cursor.execute("""
                         INSERT INTO user_levels (user_id, boost)
-                        VALUES (%s, %s, %s)
+                        VALUES (%s, %s)
                         ON DUPLICATE KEY UPDATE 
                             boost = VALUES(boost)
-                    """, (member.id, boost))
-                    conn.commit()
+                    """, (member.id, value))
+                    result_field = ("Бусты", str(value))
 
-                    cursor.execute("""
-                        SELECT level FROM user_levels
-                        WHERE user_id = %s
-                    """, (member.id,))
-                    current_level = cursor.fetchone()[0]
-                    role_name = LEVELS_CONFIG.get(current_level, {}).get("role", "Неизвестная роль")
+                conn.commit()
 
-                    # Формируем красивый ответ
-                    embed = discord.Embed(
-                        title="✅ XP успешно обновлены",
-                        color=discord.Color.green(),
-                        timestamp=datetime.datetime.now()
-                    )
-                    embed.add_field(name="Пользователь", value=member.mention, inline=True)
-                    embed.add_field(name="XP", value=str(xp), inline=True)
-                    embed.add_field(name="Уровень", value=f"Уровень {current_level}", inline=True)
-                    embed.add_field(name="Роль", value=role_name, inline=False)
-                    embed.add_field(name="Бусты", value=boost, inline=False)
-                    embed.set_footer(
-                        text=f"Изменено администратором: {interaction.user.display_name}",
-                        icon_url=interaction.user.display_avatar.url
-                    )
+                # Формируем ответ
+                embed = discord.Embed(
+                    title="✅ Профиль обновлен",
+                    color=discord.Color.green(),
+                    timestamp=datetime.datetime.now()
+                )
+                embed.add_field(name="Пользователь", value=member.mention, inline=True)
+                embed.add_field(name="Изменено", value=action.name.upper(), inline=True)
+                embed.add_field(name="Новое значение", value=str(value), inline=True)
+                embed.add_field(name=result_field[0], value=result_field[1], inline=False)
+                embed.set_footer(
+                    text=f"Изменено администратором: {interaction.user.display_name}",
+                    icon_url=interaction.user.display_avatar.url
+                )
 
-                    await interaction.response.send_message(embed=embed)
-
+                await interaction.response.send_message(embed=embed)
 
     except Exception as e:
         error_embed = discord.Embed(
             title="❌ Ошибка",
-            description=f"Не удалось обновить XP: {str(e)}",
+            description=f"Не удалось обновить профиль: {str(e)}",
             color=discord.Color.red()
         )
         await interaction.response.send_message(
