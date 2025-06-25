@@ -20,6 +20,7 @@ from data import token, assettoken, mysqlconf
 
 import Calendar
 import install_multivoice
+from BoostL import BoostL
 from Calendar import setup
 from Shop import Shop
 from install_multivoice import setup
@@ -81,6 +82,7 @@ def init_db():
                 CREATE TABLE IF NOT EXISTS user_levels (
                     user_id BIGINT PRIMARY KEY,
                     xp INT DEFAULT 0,
+                    boost INT DEFAULT 0,
                     level INT DEFAULT 1,
                     messages_count INT DEFAULT 0,
                     last_message TIMESTAMP,
@@ -476,6 +478,7 @@ async def on_ready():
     await install_multivoice.setup(bot)
     await Calendar.setup(bot)
     await Shop.setup(bot)
+    await BoostL.setup(bot)
     bot.add_view(ThreadControlView())
     try:
         # Синхронизируем команды с Discord
@@ -1542,6 +1545,17 @@ async def profile(interaction: discord.Interaction, member: discord.Member = Non
         level_text = f"Ур. {level}"
         xp_text = f"{xp}/{next_level_xp} XP"
         draw.text((bar_x, bar_y - 50), level_text, font=font_small, fill="white")
+
+        # Добавляем отображение бустов
+        with conn.cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT boost FROM user_levels WHERE user_id = %s", (target.id,))
+            boost_data = cursor.fetchone()
+            boost_count = boost_data['boost'] if boost_data and 'boost' in boost_data else 0
+
+        boost_text = f"Бусты: {boost_count}"
+        boost_width = draw.textlength(boost_text, font=font_small)
+        boost_x = bar_x + (bar_width - boost_width) // 2
+        draw.text((boost_x, bar_y - 80), boost_text, font=font_small, fill="#FFD700")  # Золотой цвет
 
         xp_width = draw.textlength(xp_text, font=font_small)
         draw.text((bar_x + bar_width - xp_width, bar_y - 50), xp_text, font=font_small, fill="white")
