@@ -1570,7 +1570,7 @@ async def profile(interaction: discord.Interaction, member: discord.Member = Non
                 boost_text = f"Бусты: {boost_count}"
                 boost_font = font_small
                 boost_width = draw.textlength(boost_text, font=boost_font)
-                boost_x = bar_x + bar_width - boost_width
+                boost_x = bar_x + (bar_width - boost_width) // 2
                 draw.text((boost_x, bar_y - 50), boost_text, font=boost_font, fill="#FFD700")
         except Exception as e:
             print(f"Ошибка при отображении бустов: {e}")
