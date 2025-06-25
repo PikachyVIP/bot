@@ -1546,17 +1546,6 @@ async def profile(interaction: discord.Interaction, member: discord.Member = Non
         xp_text = f"{xp}/{next_level_xp} XP"
         draw.text((bar_x, bar_y - 50), level_text, font=font_small, fill="white")
 
-        # Добавляем отображение бустов
-        with conn.cursor(dictionary=True) as cursor:
-            cursor.execute("SELECT boost FROM user_levels WHERE user_id = %s", (target.id,))
-            boost_data = cursor.fetchone()
-            boost_count = boost_data['boost'] if boost_data and 'boost' in boost_data else 0
-
-        boost_text = f"Бусты: {boost_count}"
-        boost_width = draw.textlength(boost_text, font=font_small)
-        boost_x = bar_x + (bar_width - boost_width) // 2
-        draw.text((boost_x, bar_y - 80), boost_text, font=font_small, fill="#FFD700")  # Золотой цвет
-
         xp_width = draw.textlength(xp_text, font=font_small)
         draw.text((bar_x + bar_width - xp_width, bar_y - 50), xp_text, font=font_small, fill="white")
 
@@ -1569,6 +1558,17 @@ async def profile(interaction: discord.Interaction, member: discord.Member = Non
         # Время на сервере
         time_width = draw.textlength(time_text, font=font_time)
         draw.text((700 - time_width - 20, 400 - 30), time_text, font=font_time, fill="#AAAAAA")
+
+        with conn.cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT boost FROM user_levels WHERE user_id = %s", (target.id,))
+            boost_data = cursor.fetchone()
+            boost_count = boost_data['boost'] if boost_data and 'boost' in boost_data else 0
+
+        boost_text = f"Бусты: {boost_count}"
+        boost_font = ImageFont.truetype("DejaVuSans.ttf", 25) if hasattr(ImageFont, 'truetype') else ImageFont.load_default(size=25)
+        boost_width = draw.textlength(boost_text, font=boost_font)
+        boost_x = bar_x + (bar_width - boost_width) // 2
+        draw.text((boost_x, bar_y - 80), boost_text, font=boost_font, fill="#FFD700")  # Золотой цвет
 
         # Сохраняем и отправляем
         buffer = io.BytesIO()
