@@ -1559,16 +1559,19 @@ async def profile(interaction: discord.Interaction, member: discord.Member = Non
         time_width = draw.textlength(time_text, font=font_time)
         draw.text((700 - time_width - 20, 400 - 30), time_text, font=font_time, fill="#AAAAAA")
 
-        with conn.cursor(dictionary=True) as cursor:
-            cursor.execute("SELECT boost FROM user_levels WHERE user_id = %s", (target.id,))
-            boost_data = cursor.fetchone()
-            boost_count = boost_data['boost'] if boost_data and 'boost' in boost_data else 0
+        try:
+            with conn.cursor(dictionary=True) as cursor:
+                cursor.execute("SELECT IFNULL(boost, 0) as boost FROM user_levels WHERE user_id = %s", (target.id,))
+                boost_data = cursor.fetchone()
+                boost_count = boost_data['boost'] if boost_data else 0
 
-        boost_text = f"Бусты: {boost_count}"
-        boost_font = ImageFont.truetype("DejaVuSans.ttf", 25) if hasattr(ImageFont, 'truetype') else ImageFont.load_default(size=25)
-        boost_width = draw.textlength(boost_text, font=boost_font)
-        boost_x = bar_x + (bar_width - boost_width) // 2
-        draw.text((boost_x, bar_y - 80), boost_text, font=boost_font, fill="#FFD700")  # Золотой цвет
+            boost_text = f"Бусты: {boost_count}"
+            boost_font = font_small  # Используем уже загруженный шрифт
+            boost_width = draw.textlength(boost_text, font=boost_font)
+            boost_x = bar_x + (bar_width - boost_width) // 2
+            draw.text((boost_x, bar_y - 80), boost_text, font=boost_font, fill="#FFD700")
+        except Exception as e:
+            print(f"Ошибка при отображении бустов: {e}")
 
         # Сохраняем и отправляем
         buffer = io.BytesIO()
