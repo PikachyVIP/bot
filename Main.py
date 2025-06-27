@@ -2707,10 +2707,14 @@ async def handle_url_playback(interaction, url, channel, volume):
     await interaction.response.defer()
 
     try:
-        # Проверяем существующее подключение
+        # Проверяем существующее подключение и корректно отключаемся
         if interaction.guild.voice_client:
-            await interaction.guild.voice_client.disconnect(force=True)
-            await asyncio.sleep(1)
+            try:
+                interaction.guild.voice_client.stop()
+                await interaction.guild.voice_client.disconnect(force=True)
+                await asyncio.sleep(1)  # Даем время для корректного отключения
+            except:
+                pass
 
         # Получаем информацию о треке
         ydl_opts = {
@@ -2732,8 +2736,24 @@ async def handle_url_playback(interaction, url, channel, volume):
             title = info.get('title', 'Неизвестный трек')
             duration = info.get('duration', 0)
 
-        # Подключаемся к голосовому каналу
-        voice_client = await channel.connect(timeout=30.0)
+        # Подключаемся к голосовому каналу с повторными попытками
+        max_attempts = 3
+        attempt = 0
+        voice_client = None
+
+        while attempt < max_attempts:
+            try:
+                voice_client = await channel.connect(timeout=30.0, reconnect=True)
+                break
+            except Exception as e:
+                attempt += 1
+                if attempt == max_attempts:
+                    raise
+                await asyncio.sleep(1 * attempt)  # Увеличиваем задержку между попытками
+
+        # Дополнительная проверка подключения
+        if not voice_client or not voice_client.is_connected():
+            raise Exception("Не удалось подключиться к голосовому каналу")
 
         # Настройки FFmpeg (используем PCM)
         ffmpeg_options = {
@@ -2767,9 +2787,17 @@ async def handle_url_playback(interaction, url, channel, volume):
 
     except Exception as e:
         print(f"Playback error: {e}")
-        if interaction.guild.voice_client:
-            await interaction.guild.voice_client.disconnect(force=True)
-        await interaction.followup.send(f"❌ Ошибка: {str(e)}", ephemeral=True)
+        error_msg = f"❌ Ошибка: {str(e)}"
+        if "Failed to connect" in str(e) or "4006" in str(e):
+            error_msg = "❌ Не удалось подключиться к голосовому каналу. Пожалуйста, попробуйте позже."
+
+        try:
+            if interaction.guild.voice_client:
+                await interaction.guild.voice_client.disconnect(force=True)
+        except:
+            pass
+
+        await interaction.followup.send(error_msg, ephemeral=True)
 
 # Основная команда (упрощенная версия для URL)
 @bot.tree.command(name="audio", description="Управление аудио (VK, звуки, URL)")
