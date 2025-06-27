@@ -2738,10 +2738,10 @@ async def handle_url_playback(interaction, url, channel, volume):
 
         try:
             voice_client = await channel.connect(timeout=15.0, reconnect=False)
-            await asyncio.sleep(1)
+            await asyncio.sleep(1)  # Даем время на установку соединения
         except Exception as e:
             print(f"Ошибка подключения: {e}")
-            await interaction.followup.send("❌ Не удалось подключиться к голосовому каналу.", ephemeral=True)
+            await interaction.followup.send(f"❌ Не удалось подключиться к голосовому каналу.: {e}", ephemeral=True)
             return
 
         # Проверяем подключение
