@@ -2736,8 +2736,13 @@ async def handle_url_playback(interaction, url, channel, volume):
             title = info.get('title', 'Неизвестный трек')
             duration = info.get('duration', 0)
 
-        # Подключаемся к каналу БЕЗ автоматического переподключения
-        voice_client = await channel.connect(timeout=15.0, reconnect=False)
+        try:
+            voice_client = await channel.connect(timeout=15.0, reconnect=False)
+            await asyncio.sleep(1)
+        except Exception as e:
+            print(f"Ошибка подключения: {e}")
+            await interaction.followup.send("❌ Не удалось подключиться к голосовому каналу.", ephemeral=True)
+            return
 
         # Проверяем подключение
         if not voice_client.is_connected():
