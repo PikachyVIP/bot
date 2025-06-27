@@ -2750,8 +2750,7 @@ async def handle_url_playback(interaction, url, channel, volume):
 
         # Настройки FFmpeg
         ffmpeg_options = {
-            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 1 -nostdin',
-            'options': '-vn -acodec pcm_s16le -f s16le -ar 48000 -ac 2 -threads 1'
+            'options': '-vn -filter:a "volume=0.5"',  # Упрощенный вариант
         }
 
         # Создаем аудио источник
