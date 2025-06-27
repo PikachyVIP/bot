@@ -2707,21 +2707,23 @@ async def handle_url_playback(interaction, url, channel, volume):
     await interaction.response.defer()
 
     try:
-        # Очистка предыдущего подключения
+        # 1. Очистка предыдущего подключения с более агрессивным подходом
         if interaction.guild.voice_client:
             try:
                 interaction.guild.voice_client.stop()
+                await asyncio.sleep(0.5)
                 await interaction.guild.voice_client.disconnect(force=True)
-                await asyncio.sleep(1)
+                await asyncio.sleep(1)  # Даем время для полного отключения
             except:
                 pass
 
-        # Получаем информацию о треке
+        # 2. Получаем информацию о треке
         ydl_opts = {
             'format': 'bestaudio/best',
             'noplaylist': True,
             'quiet': True,
-            'extract_flat': True
+            'extract_flat': True,
+            'socket_timeout': 10
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -2736,35 +2738,38 @@ async def handle_url_playback(interaction, url, channel, volume):
             title = info.get('title', 'Неизвестный трек')
             duration = info.get('duration', 0)
 
-        # Подключаемся к голосовому каналу с дополнительными проверками
+        # 3. Подключение с ручным управлением и без автоматического переподключения
         voice_client = None
-        for _ in range(3):  # 3 попытки подключения
-            try:
-                voice_client = await channel.connect(timeout=30.0, reconnect=True)
+        last_error = None
 
-                # Добавляем проверку активности соединения
+        for attempt in range(3):  # Только 3 попытки
+            try:
+                # Отключаем автоматическое переподключение
+                voice_client = await channel.connect(timeout=15.0, reconnect=False)
+
+                # Дополнительная проверка через 1 секунду
                 await asyncio.sleep(1)
                 if voice_client.is_connected():
                     break
-                else:
-                    await voice_client.disconnect(force=True)
-                    continue
+
+                await voice_client.disconnect(force=True)
+                raise Exception("Соединение не подтверждено")
 
             except Exception as e:
-                print(f"Ошибка подключения (попытка {_ + 1}): {e}")
-                await asyncio.sleep(2)
+                last_error = e
+                if attempt < 2:  # Не ждем после последней попытки
+                    await asyncio.sleep(2 * (attempt + 1))
                 continue
 
         if not voice_client or not voice_client.is_connected():
-            raise Exception("Не удалось подключиться к голосовому каналу")
+            raise Exception(f"Не удалось подключиться после 3 попыток: {str(last_error)}")
 
-        # Настройки FFmpeg с уменьшенным reconnect_delay_max
+        # 4. Настройка аудио с минимальными опциями
         ffmpeg_options = {
-            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 1 -nostdin',
-            'options': '-vn -acodec pcm_s16le -f s16le -ar 48000 -ac 2 -threads 1'
+            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 2 -nostdin',
+            'options': '-vn -acodec pcm_s16le -ar 48000 -ac 2'
         }
 
-        # Создаем аудио источник
         audio_source = discord.FFmpegPCMAudio(
             audio_url,
             **ffmpeg_options
@@ -2772,17 +2777,21 @@ async def handle_url_playback(interaction, url, channel, volume):
         audio_source = discord.PCMVolumeTransformer(audio_source)
         audio_source.volume = vol / 100
 
-        # Создаем контролы
+        # 5. Контролы с улучшенной обработкой отключения
         controls = URLControls(voice_client, vol, title, duration, interaction)
-        controls._keep_alive_task = interaction.client.loop.create_task(controls.ensure_voice_keepalive())
 
-        # Добавляем задержку перед воспроизведением
+        def after_playing(error):
+            if error:
+                print(f"Ошибка воспроизведения: {error}")
+            asyncio.run_coroutine_threadsafe(controls.cleanup(), interaction.client.loop)
+
+        # 6. Задержка перед воспроизведением
         await asyncio.sleep(1)
 
-        # Запускаем воспроизведение
-        voice_client.play(audio_source, after=controls.after_playing)
+        voice_client.play(audio_source, after=after_playing)
+        controls._keep_alive_task = interaction.client.loop.create_task(controls.ensure_voice_keepalive())
 
-        # Отправляем сообщение с контролами
+        # 7. Отправка сообщения
         message = await interaction.followup.send(
             embed=controls.create_embed(),
             view=controls
@@ -2790,18 +2799,13 @@ async def handle_url_playback(interaction, url, channel, volume):
         controls.message = message
 
     except Exception as e:
-        print(f"Playback error: {e}")
-        error_msg = f"❌ Ошибка: {str(e)}"
-        if "4006" in str(e) or "Не удалось подключиться" in str(e):
-            error_msg = "❌ Временная проблема с подключением. Пожалуйста, попробуйте снова через 30 секунд."
+        print(f"Ошибка воспроизведения: {e}")
 
         try:
             if interaction.guild.voice_client:
                 await interaction.guild.voice_client.disconnect(force=True)
         except:
             pass
-
-        await interaction.followup.send(error_msg, ephemeral=True)
 
 # Основная команда (упрощенная версия для URL)
 @bot.tree.command(name="audio", description="Управление аудио (VK, звуки, URL)")
