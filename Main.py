@@ -2707,118 +2707,93 @@ async def handle_url_playback(interaction, url, channel, volume):
     await interaction.response.defer()
 
     try:
-        # 1. Очистка предыдущего подключения
+        # Очистка предыдущего подключения
         if interaction.guild.voice_client:
             try:
                 interaction.guild.voice_client.stop()
                 await interaction.guild.voice_client.disconnect(force=True)
-                await asyncio.sleep(2)  # Увеличенная задержка для гарантированного отключения
-            except Exception as e:
-                print(f"Ошибка при отключении: {e}")
+                await asyncio.sleep(1)
+            except:
+                pass
 
-        # 2. Получение информации о треке
+        # Получаем информацию о треке
         ydl_opts = {
             'format': 'bestaudio/best',
             'noplaylist': True,
             'quiet': True,
-            'extract_flat': True,
-            'socket_timeout': 10,
-            'nocheckcertificate': True
+            'extract_flat': True
         }
 
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = await interaction.client.loop.run_in_executor(None,
-                                                                     lambda: ydl.extract_info(url, download=False))
-                if 'url' not in info:
-                    if 'entries' in info:
-                        info = info['entries'][0]
-                    else:
-                        raise Exception("Не удалось получить аудио URL")
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if 'url' not in info:
+                if 'entries' in info:
+                    info = info['entries'][0]
+                else:
+                    raise Exception("Не удалось получить аудио URL")
 
-                audio_url = info['url']
-                title = info.get('title', 'Неизвестный трек')
-                duration = info.get('duration', 0)
-        except Exception as e:
-            raise Exception(f"Ошибка получения информации о треке: {str(e)}")
+            audio_url = info['url']
+            title = info.get('title', 'Неизвестный трек')
+            duration = info.get('duration', 0)
 
-        # 3. Подключение к голосовому каналу с расширенной логикой
+        # Подключаемся к голосовому каналу с дополнительными проверками
         voice_client = None
-        max_attempts = 5
-        base_delay = 1.5
-
-        for attempt in range(max_attempts):
+        for _ in range(3):  # 3 попытки подключения
             try:
                 voice_client = await channel.connect(timeout=30.0, reconnect=True)
 
-                # Дополнительная проверка успешности подключения
+                # Добавляем проверку активности соединения
                 await asyncio.sleep(1)
                 if voice_client.is_connected():
                     break
                 else:
-                    raise Exception("Подключение не подтверждено")
+                    await voice_client.disconnect(force=True)
+                    continue
 
             except Exception as e:
-                if attempt == max_attempts - 1:
-                    raise Exception(f"Не удалось подключиться после {max_attempts} попыток: {str(e)}")
-
-                delay = base_delay * (attempt + 1)
-                await asyncio.sleep(delay)
+                print(f"Ошибка подключения (попытка {_ + 1}): {e}")
+                await asyncio.sleep(2)
                 continue
 
-        # 4. Проверка состояния подключения
         if not voice_client or not voice_client.is_connected():
-            raise Exception("Критическая ошибка: подключение не установлено")
+            raise Exception("Не удалось подключиться к голосовому каналу")
 
-        # 5. Настройка аудио источника с обработкой ошибок
+        # Настройки FFmpeg с уменьшенным reconnect_delay_max
         ffmpeg_options = {
             'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 1 -nostdin',
             'options': '-vn -acodec pcm_s16le -f s16le -ar 48000 -ac 2 -threads 1'
         }
 
-        try:
-            audio_source = discord.FFmpegPCMAudio(
-                audio_url,
-                **ffmpeg_options,
-                stderr=subprocess.PIPE
-            )
-            audio_source = discord.PCMVolumeTransformer(audio_source)
-            audio_source.volume = vol / 100
-        except Exception as e:
-            await voice_client.disconnect(force=True)
-            raise Exception(f"Ошибка создания аудио источника: {str(e)}")
+        # Создаем аудио источник
+        audio_source = discord.FFmpegPCMAudio(
+            audio_url,
+            **ffmpeg_options
+        )
+        audio_source = discord.PCMVolumeTransformer(audio_source)
+        audio_source.volume = vol / 100
 
-        # 6. Создание контролов и запуск воспроизведения
+        # Создаем контролы
         controls = URLControls(voice_client, vol, title, duration, interaction)
-
-        def after_playing(error):
-            if error:
-                print(f"Ошибка воспроизведения: {error}")
-            asyncio.run_coroutine_threadsafe(controls.cleanup(), interaction.client.loop)
-
-        voice_client.play(audio_source, after=after_playing)
         controls._keep_alive_task = interaction.client.loop.create_task(controls.ensure_voice_keepalive())
 
-        # 7. Отправка сообщения с контролами
-        try:
-            message = await interaction.followup.send(
-                embed=controls.create_embed(),
-                view=controls
-            )
-            controls.message = message
-        except Exception as e:
-            await controls.cleanup()
-            raise Exception(f"Ошибка отправки сообщения: {str(e)}")
+        # Добавляем задержку перед воспроизведением
+        await asyncio.sleep(1)
+
+        # Запускаем воспроизведение
+        voice_client.play(audio_source, after=controls.after_playing)
+
+        # Отправляем сообщение с контролами
+        message = await interaction.followup.send(
+            embed=controls.create_embed(),
+            view=controls
+        )
+        controls.message = message
 
     except Exception as e:
-        print(f"Ошибка воспроизведения: {e}")
+        print(f"Playback error: {e}")
         error_msg = f"❌ Ошибка: {str(e)}"
-
-        # Специальные сообщения для частых ошибок
-        if "4006" in str(e):
-            error_msg = "❌ Не удалось подключиться к голосовому каналу (таймаут соединения). Попробуйте снова через минуту."
-        elif "Не удалось подключиться" in str(e):
-            error_msg = "❌ Проблемы с подключением к голосовому каналу. Проверьте:\n1. Доступность канала\n2. Разрешения бота\n3. Стабильность интернета"
+        if "4006" in str(e) or "Не удалось подключиться" in str(e):
+            error_msg = "❌ Временная проблема с подключением. Пожалуйста, попробуйте снова через 30 секунд."
 
         try:
             if interaction.guild.voice_client:
